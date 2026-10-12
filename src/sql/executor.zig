@@ -55,7 +55,7 @@ const LockTarget = lock_mod.LockTarget;
 
 const ENABLE_TESTS = true;
 
-// ── Date/Time Constants & Utilities ───────────────────────────────────────
+// ── Date/Time Constants & Utilities ───────────────────
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
 const MICROS_PER_MINUTE: i64 = 60 * MICROS_PER_SECOND;
@@ -91,7 +91,8 @@ fn daysToDate(days: i32) struct { year: i32, month: u8, day: u8 } {
     const z = days + 719468;
     const era = @divFloor(z, 146097);
     const doe: i32 = z - era * 146097;
-    const yoe = @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) - @divFloor(doe, 146096), 365);
+    const yoe =
+        @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) - @divFloor(doe, 146096), 365);
     const y = yoe + era * 400;
     const doy = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
     const mp = @divFloor(5 * doy + 2, 153);
@@ -160,9 +161,17 @@ pub fn formatDate(allocator: Allocator, days: i32) ![]u8 {
     const date = daysToDate(days);
     // Handle year carefully - format as signed for negative years, but don't show + for positive
     if (date.year < 0) {
-        return std.fmt.allocPrint(allocator, "{d:0>5}-{d:0>2}-{d:0>2}", .{ date.year, @as(u32, date.month), @as(u32, date.day) });
+        return std.fmt.allocPrint(
+            allocator,
+            "{d:0>5}-{d:0>2}-{d:0>2}",
+            .{ date.year, @as(u32, date.month), @as(u32, date.day) },
+        );
     } else {
-        return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u32, @intCast(date.year)), @as(u32, date.month), @as(u32, date.day) });
+        return std.fmt.allocPrint(
+            allocator,
+            "{d:0>4}-{d:0>2}-{d:0>2}",
+            .{ @as(u32, @intCast(date.year)), @as(u32, date.month), @as(u32, date.day) },
+        );
     }
 }
 
@@ -186,36 +195,60 @@ pub fn formatTimestamp(allocator: Allocator, micros: i64) ![]u8 {
     const second = @as(u32, @intCast(@mod(total_secs, 60)));
     // Handle year carefully - format as unsigned for positive years
     if (date.year < 0) {
-        return std.fmt.allocPrint(allocator, "{d:0>5}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{ date.year, @as(u32, date.month), @as(u32, date.day), hour, minute, second });
+        return std.fmt.allocPrint(
+            allocator,
+            "{d:0>5}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
+            .{ date.year, @as(u32, date.month), @as(u32, date.day), hour, minute, second },
+        );
     } else {
-        return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{ @as(u32, @intCast(date.year)), @as(u32, date.month), @as(u32, date.day), hour, minute, second });
+        return std.fmt.allocPrint(
+            allocator,
+            "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
+            .{
+                @as(u32, @intCast(date.year)),
+                @as(u32, date.month),
+                @as(u32, date.day),
+                hour,
+                minute,
+                second,
+            },
+        );
     }
 }
 
+/// English plural suffix for an interval unit: "" for +/-1, "s" otherwise.
+fn pluralSuffix(n: i64) []const u8 {
+    return if (n == 1 or n == -1) "" else "s";
+}
+
+/// Rendered pieces of an interval string; at most year, mon, day and time.
+const IntervalParts = struct {
+    bufs: [4][]u8 = undefined,
+    count: usize = 0,
+
+    fn push(
+        self: *IntervalParts,
+        allocator: Allocator,
+        comptime fmt: []const u8,
+        args: anytype,
+    ) !void {
+        std.debug.assert(self.count < self.bufs.len);
+        std.debug.assert(fmt.len > 0);
+        self.bufs[self.count] = try std.fmt.allocPrint(allocator, fmt, args);
+        self.count += 1;
+    }
+};
+
 /// Format an interval as PostgreSQL-compatible string (e.g., "1 year 2 mons 3 days 04:05:06").
 pub fn formatInterval(allocator: Allocator, iv: Value.Interval) ![]u8 {
-    var parts: [4][]const u8 = undefined;
-    var bufs: [4][]u8 = undefined;
-    var count: usize = 0;
+    var ps = IntervalParts{};
 
     const years = @divTrunc(iv.months, 12);
     const mons = @mod(iv.months, 12);
 
-    if (years != 0) {
-        bufs[count] = try std.fmt.allocPrint(allocator, "{d} year{s}", .{ years, if (years == 1 or years == -1) "" else "s" });
-        parts[count] = bufs[count];
-        count += 1;
-    }
-    if (mons != 0) {
-        bufs[count] = try std.fmt.allocPrint(allocator, "{d} mon{s}", .{ mons, if (mons == 1 or mons == -1) "" else "s" });
-        parts[count] = bufs[count];
-        count += 1;
-    }
-    if (iv.days != 0) {
-        bufs[count] = try std.fmt.allocPrint(allocator, "{d} day{s}", .{ iv.days, if (iv.days == 1 or iv.days == -1) "" else "s" });
-        parts[count] = bufs[count];
-        count += 1;
-    }
+    if (years != 0) try ps.push(allocator, "{d} year{s}", .{ years, pluralSuffix(years) });
+    if (mons != 0) try ps.push(allocator, "{d} mon{s}", .{ mons, pluralSuffix(mons) });
+    if (iv.days != 0) try ps.push(allocator, "{d} day{s}", .{ iv.days, pluralSuffix(iv.days) });
 
     const abs_micros = if (iv.micros < 0) -iv.micros else iv.micros;
     const total_secs = @divTrunc(abs_micros, MICROS_PER_SECOND);
@@ -224,34 +257,33 @@ pub fn formatInterval(allocator: Allocator, iv: Value.Interval) ![]u8 {
     const s = @as(u32, @intCast(@mod(total_secs, 60)));
     if (iv.micros != 0) {
         if (iv.micros < 0) {
-            bufs[count] = try std.fmt.allocPrint(allocator, "-{d:0>2}:{d:0>2}:{d:0>2}", .{ h, m, s });
+            try ps.push(allocator, "-{d:0>2}:{d:0>2}:{d:0>2}", .{ h, m, s });
         } else {
-            bufs[count] = try std.fmt.allocPrint(allocator, "{d:0>2}:{d:0>2}:{d:0>2}", .{ h, m, s });
+            try ps.push(allocator, "{d:0>2}:{d:0>2}:{d:0>2}", .{ h, m, s });
         }
-        parts[count] = bufs[count];
-        count += 1;
     }
 
-    if (count == 0) {
+    if (ps.count == 0) {
         return try std.fmt.allocPrint(allocator, "00:00:00", .{});
     }
 
     // Join parts with spaces
+    const parts = ps.bufs[0..ps.count];
     var total_len: usize = 0;
-    for (parts[0..count]) |p| total_len += p.len;
-    total_len += count - 1; // spaces
+    for (parts) |p| total_len += p.len;
+    total_len += ps.count - 1; // spaces
 
     const result = try allocator.alloc(u8, total_len);
     var pos: usize = 0;
-    for (parts[0..count], 0..) |p, i| {
+    for (parts, 0..) |p, i| {
         @memcpy(result[pos..][0..p.len], p);
         pos += p.len;
-        if (i < count - 1) {
+        if (i < ps.count - 1) {
             result[pos] = ' ';
             pos += 1;
         }
     }
-    for (bufs[0..count]) |b| allocator.free(b);
+    for (parts) |b| allocator.free(b);
 
     return result;
 }
@@ -304,7 +336,7 @@ fn parseIntervalString(s: []const u8) ?Value.Interval {
         while (i < s.len and s[i] != ' ' and s[i] >= 'a' and s[i] <= 'z') i += 1;
         // Also handle uppercase
         if (i == unit_start) {
-            while (i < s.len and s[i] != ' ' and ((s[i] >= 'a' and s[i] <= 'z') or (s[i] >= 'A' and s[i] <= 'Z'))) i += 1;
+            while (i < s.len and s[i] != ' ' and std.ascii.isAlphabetic(s[i])) i += 1;
         }
         const unit = s[unit_start..i];
 
@@ -387,7 +419,7 @@ fn negateInterval(iv: Value.Interval) Value.Interval {
     return .{ .months = -iv.months, .days = -iv.days, .micros = -iv.micros };
 }
 
-// ── Numeric Helpers ──────────────────────────────────────────────────────
+// ── Numeric Helpers ────────────────────────
 
 /// Compute 10^exp as i128.
 fn powI128(base: i128, exp: u8) i128 {
@@ -417,8 +449,10 @@ fn numericToReal(n: Value.Numeric) f64 {
     return @as(f64, @floatFromInt(n.value)) / factor;
 }
 
+const AlignedNumerics = struct { av: i128, bv: i128, scale: u8 };
+
 /// Align two numerics to the same scale (the larger one).
-fn alignScale(a: Value.Numeric, b: Value.Numeric) struct { av: i128, bv: i128, scale: u8 } {
+fn alignScale(a: Value.Numeric, b: Value.Numeric) AlignedNumerics {
     if (a.scale == b.scale) return .{ .av = a.value, .bv = b.value, .scale = a.scale };
     if (a.scale > b.scale) {
         const diff = a.scale - b.scale;
@@ -519,7 +553,7 @@ pub fn formatNumeric(allocator: Allocator, n: Value.Numeric) ![]u8 {
     }
 }
 
-// ── UUID Helpers ─────────────────────────────────────────────────────────
+// ── UUID Helpers ─────────────────────────
 
 /// Format a UUID as "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".
 pub fn formatUuid(allocator: Allocator, bytes: [16]u8) ![]u8 {
@@ -600,6 +634,22 @@ fn isStopWord(word: []const u8) bool {
     return false;
 }
 
+/// Porter step 1b fix-up: after stripping -ed/-ing, restore a trailing 'e' when the stem
+/// ends in "at", "bl" or "iz". Takes ownership of `stem` and returns the (possibly new) stem.
+fn restoreTrailingE(allocator: Allocator, stem: []u8) ![]u8 {
+    std.debug.assert(stem.len > 0);
+    const needs_e = std.mem.endsWith(u8, stem, "at") or std.mem.endsWith(u8, stem, "bl") or
+        std.mem.endsWith(u8, stem, "iz");
+    if (!needs_e) return stem;
+
+    const new = try allocator.alloc(u8, stem.len + 1);
+    @memcpy(new[0..stem.len], stem);
+    new[stem.len] = 'e';
+    allocator.free(stem);
+    std.debug.assert(new[new.len - 1] == 'e');
+    return new;
+}
+
 /// Porter Stemmer - reduce English words to their root form.
 /// This is a simplified implementation of the Porter stemming algorithm.
 /// Reference: https://tartarus.org/martin/PorterStemmer/
@@ -633,25 +683,13 @@ fn porterStem(allocator: Allocator, word: []const u8) ![]u8 {
         const base = stem[0 .. stem.len - 2];
         if (hasVowel(base)) {
             stem = try allocator.realloc(stem, stem.len - 2);
-            if (std.mem.endsWith(u8, stem, "at") or std.mem.endsWith(u8, stem, "bl") or std.mem.endsWith(u8, stem, "iz")) {
-                const new = try allocator.alloc(u8, stem.len + 1);
-                @memcpy(new[0..stem.len], stem);
-                new[stem.len] = 'e';
-                allocator.free(stem);
-                stem = new;
-            }
+            stem = try restoreTrailingE(allocator, stem);
         }
     } else if (std.mem.endsWith(u8, stem, "ing")) {
         const base = stem[0 .. stem.len - 3];
         if (hasVowel(base)) {
             stem = try allocator.realloc(stem, stem.len - 3);
-            if (std.mem.endsWith(u8, stem, "at") or std.mem.endsWith(u8, stem, "bl") or std.mem.endsWith(u8, stem, "iz")) {
-                const new = try allocator.alloc(u8, stem.len + 1);
-                @memcpy(new[0..stem.len], stem);
-                new[stem.len] = 'e';
-                allocator.free(stem);
-                stem = new;
-            }
+            stem = try restoreTrailingE(allocator, stem);
         }
     }
     _ = old_len;
@@ -710,7 +748,8 @@ fn countVC(word: []const u8) usize {
 }
 
 /// Convert text to tsvector with stemming and stop word removal.
-/// Tokenization: split on whitespace/punctuation, lowercase, stem, filter stop words, sort, deduplicate.
+/// Tokenization: split on whitespace/punctuation, lowercase, stem, filter stop words, sort,
+/// deduplicate.
 fn textToTsvector(allocator: Allocator, text: []const u8) ![]u8 {
     if (text.len == 0) return allocator.dupe(u8, "");
 
@@ -862,7 +901,12 @@ fn textToTsquery(allocator: Allocator, query: []const u8) ![]u8 {
 
 /// Calculate relevance rank based on frequency of query terms in tsvector.
 /// normalization: 0 = none, 1 = divide by length, 2 = divide by log(length), etc.
-fn calculateRank(allocator: Allocator, tsvec: []const u8, tsquery: []const u8, normalization: i64) !f64 {
+fn calculateRank(
+    allocator: Allocator,
+    tsvec: []const u8,
+    tsquery: []const u8,
+    normalization: i64,
+) !f64 {
     _ = allocator; // unused for now
 
     if (tsvec.len == 0 or tsquery.len == 0) return 0.0;
@@ -915,7 +959,12 @@ fn calculateRank(allocator: Allocator, tsvec: []const u8, tsquery: []const u8, n
 
 /// Calculate cover density rank (proximity-based ranking).
 /// This is a simplified version that considers token proximity.
-fn calculateRankCD(allocator: Allocator, tsvec: []const u8, tsquery: []const u8, normalization: i64) !f64 {
+fn calculateRankCD(
+    allocator: Allocator,
+    tsvec: []const u8,
+    tsquery: []const u8,
+    normalization: i64,
+) !f64 {
     _ = allocator; // unused for now
 
     if (tsvec.len == 0 or tsquery.len == 0) return 0.0;
@@ -1150,7 +1199,7 @@ fn parseArrayString(allocator: Allocator, s: []const u8) ?[]Value {
     return result;
 }
 
-// ── MVCC Context ──────────────────────────────────────────────────────────
+// ── MVCC Context ─────────────────────────
 
 /// MVCC context passed to scan operators for visibility filtering.
 /// When null/disabled, all rows are visible (legacy/auto-commit mode).
@@ -1165,7 +1214,7 @@ pub const MvccContext = struct {
     tm: ?*mvcc_mod.TransactionManager = null,
 };
 
-// ── Value Type ──────────────────────────────────────────────────────────
+// ── Value Type ──────────────────────────
 
 /// A runtime value in the executor.
 pub const Value = union(enum) {
@@ -1389,7 +1438,7 @@ pub const Value = union(enum) {
     }
 };
 
-// ── Row ─────────────────────────────────────────────────────────────────
+// ── Row ────────────────────────────
 
 /// A row is a sequence of named column values.
 pub const Row = struct {
@@ -1427,7 +1476,9 @@ pub const Row = struct {
             if (std.mem.indexOf(u8, col, ".")) |dot_pos| {
                 const col_table = col[0..dot_pos];
                 const col_name = col[dot_pos + 1 ..];
-                if (std.ascii.eqlIgnoreCase(col_table, table) and std.ascii.eqlIgnoreCase(col_name, column)) {
+                if (std.ascii.eqlIgnoreCase(col_table, table) and
+                    std.ascii.eqlIgnoreCase(col_name, column))
+                {
                     // Return NULL if row doesn't have enough values (e.g., added column)
                     if (i >= self.values.len) return .null_value;
                     return self.values[i];
@@ -1463,7 +1514,7 @@ pub const Row = struct {
     }
 };
 
-// ── Row Serialization ───────────────────────────────────────────────────
+// ── Row Serialization ────────────────────────
 
 /// Serialize a row's values into bytes for B+Tree storage.
 /// Format: [col_count: u16] for each col: [type_tag: u8][value_data...]
@@ -1652,6 +1703,20 @@ const DeserializeResult = struct {
     bytes_read: usize,
 };
 
+const LenPrefixed = struct { bytes: []u8, end: usize };
+
+/// Reads a u32-length-prefixed byte run at `pos`; `end` is the offset one past the run.
+fn readLenPrefixed(allocator: Allocator, data: []const u8, pos: usize) !LenPrefixed {
+    std.debug.assert(pos <= data.len);
+    if (pos + 4 > data.len) return error.InvalidRowData;
+    const len = std.mem.readInt(u32, data[pos..][0..4], .little);
+    const body = pos + 4;
+    if (body + len > data.len) return error.InvalidRowData;
+    const bytes = try allocator.dupe(u8, data[body..][0..len]);
+    std.debug.assert(bytes.len == len);
+    return .{ .bytes = bytes, .end = body + len };
+}
+
 fn deserializeValue(allocator: Allocator, data: []const u8, start: usize) !DeserializeResult {
     var pos = start;
     if (pos >= data.len) return error.InvalidRowData;
@@ -1670,20 +1735,12 @@ fn deserializeValue(allocator: Allocator, data: []const u8, start: usize) !Deser
             return .{ .value = .{ .real = val }, .bytes_read = pos + 8 - start };
         },
         0x03 => { // text
-            if (pos + 4 > data.len) return error.InvalidRowData;
-            const len = std.mem.readInt(u32, data[pos..][0..4], .little);
-            pos += 4;
-            if (pos + len > data.len) return error.InvalidRowData;
-            const val = try allocator.dupe(u8, data[pos..][0..len]);
-            return .{ .value = .{ .text = val }, .bytes_read = pos + len - start };
+            const lp = try readLenPrefixed(allocator, data, pos);
+            return .{ .value = .{ .text = lp.bytes }, .bytes_read = lp.end - start };
         },
         0x04 => { // blob
-            if (pos + 4 > data.len) return error.InvalidRowData;
-            const len = std.mem.readInt(u32, data[pos..][0..4], .little);
-            pos += 4;
-            if (pos + len > data.len) return error.InvalidRowData;
-            const val = try allocator.dupe(u8, data[pos..][0..len]);
-            return .{ .value = .{ .blob = val }, .bytes_read = pos + len - start };
+            const lp = try readLenPrefixed(allocator, data, pos);
+            return .{ .value = .{ .blob = lp.bytes }, .bytes_read = lp.end - start };
         },
         0x05 => { // boolean
             if (pos >= data.len) return error.InvalidRowData;
@@ -1712,7 +1769,10 @@ fn deserializeValue(allocator: Allocator, data: []const u8, start: usize) !Deser
             pos += 4;
             const micros = std.mem.readInt(i64, data[pos..][0..8], .little);
             pos += 8;
-            return .{ .value = .{ .interval = .{ .months = months, .days = days, .micros = micros } }, .bytes_read = pos - start };
+            return .{
+                .value = .{ .interval = .{ .months = months, .days = days, .micros = micros } },
+                .bytes_read = pos - start,
+            };
         },
         0x0A => { // numeric
             if (pos + 17 > data.len) return error.InvalidRowData;
@@ -1720,7 +1780,10 @@ fn deserializeValue(allocator: Allocator, data: []const u8, start: usize) !Deser
             pos += 1;
             const value = std.mem.readInt(i128, data[pos..][0..16], .little);
             pos += 16;
-            return .{ .value = .{ .numeric = .{ .value = value, .scale = scale } }, .bytes_read = pos - start };
+            return .{
+                .value = .{ .numeric = .{ .value = value, .scale = scale } },
+                .bytes_read = pos - start,
+            };
         },
         0x0B => { // uuid
             if (pos + 16 > data.len) return error.InvalidRowData;
@@ -1747,20 +1810,12 @@ fn deserializeValue(allocator: Allocator, data: []const u8, start: usize) !Deser
             return .{ .value = .{ .array = elems }, .bytes_read = pos - start };
         },
         0x0F => { // tsvector
-            if (pos + 4 > data.len) return error.InvalidRowData;
-            const len = std.mem.readInt(u32, data[pos..][0..4], .little);
-            pos += 4;
-            if (pos + len > data.len) return error.InvalidRowData;
-            const val = try allocator.dupe(u8, data[pos..][0..len]);
-            return .{ .value = .{ .tsvector = val }, .bytes_read = pos + len - start };
+            const lp = try readLenPrefixed(allocator, data, pos);
+            return .{ .value = .{ .tsvector = lp.bytes }, .bytes_read = lp.end - start };
         },
         0x10 => { // tsquery
-            if (pos + 4 > data.len) return error.InvalidRowData;
-            const len = std.mem.readInt(u32, data[pos..][0..4], .little);
-            pos += 4;
-            if (pos + len > data.len) return error.InvalidRowData;
-            const val = try allocator.dupe(u8, data[pos..][0..len]);
-            return .{ .value = .{ .tsquery = val }, .bytes_read = pos + len - start };
+            const lp = try readLenPrefixed(allocator, data, pos);
+            return .{ .value = .{ .tsquery = lp.bytes }, .bytes_read = lp.end - start };
         },
         0x00 => { // null
             return .{ .value = .null_value, .bytes_read = 1 };
@@ -1793,7 +1848,7 @@ pub fn deserializeRow(allocator: Allocator, data: []const u8) ![]Value {
     return values;
 }
 
-// ── Expression Evaluator ────────────────────────────────────────────────
+// ── Expression Evaluator ───────────────────────
 
 pub const EvalError = error{
     OutOfMemory,
@@ -1808,23 +1863,94 @@ pub const EvalError = error{
 /// Stored as opaque pointer in Catalog to avoid circular imports.
 pub const SubqueryEvaluator = struct {
     ptr: *anyopaque,
-    eval_scalar_fn: *const fn (ptr: *anyopaque, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row) EvalError!Value,
-    eval_exists_fn: *const fn (ptr: *anyopaque, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row) EvalError!bool,
-    eval_contains_fn: *const fn (ptr: *anyopaque, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row, needle: Value) EvalError!bool,
+    eval_scalar_fn: *const fn (
+        ptr: *anyopaque,
+        allocator: Allocator,
+        stmt: *const ast.SelectStmt,
+        row: *const Row,
+    ) EvalError!Value,
+    eval_exists_fn: *const fn (
+        ptr: *anyopaque,
+        allocator: Allocator,
+        stmt: *const ast.SelectStmt,
+        row: *const Row,
+    ) EvalError!bool,
+    eval_contains_fn: *const fn (
+        ptr: *anyopaque,
+        allocator: Allocator,
+        stmt: *const ast.SelectStmt,
+        row: *const Row,
+        needle: Value,
+    ) EvalError!bool,
 
-    pub fn evalScalar(self: *const SubqueryEvaluator, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row) EvalError!Value {
+    pub fn evalScalar(
+        self: *const SubqueryEvaluator,
+        allocator: Allocator,
+        stmt: *const ast.SelectStmt,
+        row: *const Row,
+    ) EvalError!Value {
         return self.eval_scalar_fn(self.ptr, allocator, stmt, row);
     }
-    pub fn evalExists(self: *const SubqueryEvaluator, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row) EvalError!bool {
+    pub fn evalExists(
+        self: *const SubqueryEvaluator,
+        allocator: Allocator,
+        stmt: *const ast.SelectStmt,
+        row: *const Row,
+    ) EvalError!bool {
         return self.eval_exists_fn(self.ptr, allocator, stmt, row);
     }
-    pub fn evalContains(self: *const SubqueryEvaluator, allocator: Allocator, stmt: *const ast.SelectStmt, row: *const Row, needle: Value) EvalError!bool {
+    pub fn evalContains(
+        self: *const SubqueryEvaluator,
+        allocator: Allocator,
+        stmt: *const ast.SelectStmt,
+        row: *const Row,
+        needle: Value,
+    ) EvalError!bool {
         return self.eval_contains_fn(self.ptr, allocator, stmt, row, needle);
     }
 };
 
+/// Evaluates a simple (`CASE x WHEN ...`) or searched (`CASE WHEN cond ...`) CASE expression.
+fn evalCaseExpr(
+    allocator: Allocator,
+    ce: anytype,
+    row: *const Row,
+    catalog: ?*Catalog,
+) EvalError!Value {
+    std.debug.assert(ce.when_clauses.len <= std.math.maxInt(u32));
+    std.debug.assert(@intFromPtr(row) != 0);
+    if (ce.operand) |operand| {
+        const op_val = try evalExpr(allocator, operand, row, catalog);
+        defer op_val.free(allocator);
+        for (ce.when_clauses) |wc| {
+            const when_val = try evalExpr(allocator, wc.condition, row, catalog);
+            defer when_val.free(allocator);
+            if (op_val.eql(when_val)) {
+                return evalExpr(allocator, wc.result, row, catalog);
+            }
+        }
+    } else {
+        for (ce.when_clauses) |wc| {
+            const cond = try evalExpr(allocator, wc.condition, row, catalog);
+            defer cond.free(allocator);
+            if (cond.isTruthy()) {
+                return evalExpr(allocator, wc.result, row, catalog);
+            }
+        }
+    }
+    if (ce.else_expr) |else_e| {
+        return evalExpr(allocator, else_e, row, catalog);
+    }
+    return .null_value;
+}
+
 /// Evaluate an AST expression against a row, producing a Value.
-pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, catalog: ?*Catalog) EvalError!Value {
+pub fn evalExpr(
+    allocator: Allocator,
+    expr: *const ast.Expr,
+    row: *const Row,
+    catalog: ?*Catalog,
+) EvalError!Value {
     switch (expr.*) {
         .integer_literal => |v| return .{ .integer = v },
         .float_literal => |v| return .{ .real = v },
@@ -1834,8 +1960,9 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
 
         .column_ref => |ref| {
             if (ref.prefix) |table| {
-                return (row.getQualifiedColumn(table, ref.name) orelse
-                    return EvalError.ColumnNotFound).dupe(allocator) catch return EvalError.OutOfMemory;
+                const found = row.getQualifiedColumn(table, ref.name) orelse
+                    return EvalError.ColumnNotFound;
+                return found.dupe(allocator) catch return EvalError.OutOfMemory;
             }
             return (row.getColumn(ref.name) orelse
                 return EvalError.ColumnNotFound).dupe(allocator) catch return EvalError.OutOfMemory;
@@ -1920,7 +2047,12 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
                 const cat = catalog orelse return .{ .boolean = il.negated };
                 const ev_ptr = cat.subquery_evaluator orelse return .{ .boolean = il.negated };
                 const evaluator: *SubqueryEvaluator = @ptrCast(@alignCast(ev_ptr));
-                const found = evaluator.evalContains(allocator, il.list[0].subquery, row, val) catch return .{ .boolean = il.negated };
+                const found = evaluator.evalContains(
+                    allocator,
+                    il.list[0].subquery,
+                    row,
+                    val,
+                ) catch return .{ .boolean = il.negated };
                 return .{ .boolean = if (il.negated) !found else found };
             }
             var found = false;
@@ -1968,31 +2100,7 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
             return .{ .boolean = if (lk.negated) !matches else matches };
         },
 
-        .case_expr => |ce| {
-            if (ce.operand) |operand| {
-                const op_val = try evalExpr(allocator, operand, row, catalog);
-                defer op_val.free(allocator);
-                for (ce.when_clauses) |wc| {
-                    const when_val = try evalExpr(allocator, wc.condition, row, catalog);
-                    defer when_val.free(allocator);
-                    if (op_val.eql(when_val)) {
-                        return evalExpr(allocator, wc.result, row, catalog);
-                    }
-                }
-            } else {
-                for (ce.when_clauses) |wc| {
-                    const cond = try evalExpr(allocator, wc.condition, row, catalog);
-                    defer cond.free(allocator);
-                    if (cond.isTruthy()) {
-                        return evalExpr(allocator, wc.result, row, catalog);
-                    }
-                }
-            }
-            if (ce.else_expr) |else_e| {
-                return evalExpr(allocator, else_e, row, catalog);
-            }
-            return .null_value;
-        },
+        .case_expr => |ce| return evalCaseExpr(allocator, ce, row, catalog),
 
         .cast => |c| {
             const val = try evalExpr(allocator, c.expr, row, catalog);
@@ -2082,14 +2190,22 @@ pub fn evalExpr(allocator: Allocator, expr: *const ast.Expr, row: *const Row, ca
             const cat = catalog orelse return EvalError.UnsupportedExpression;
             const ev_ptr = cat.subquery_evaluator orelse return EvalError.UnsupportedExpression;
             const evaluator: *SubqueryEvaluator = @ptrCast(@alignCast(ev_ptr));
-            return evaluator.evalScalar(allocator, sel, row) catch return EvalError.UnsupportedExpression;
+            return evaluator.evalScalar(
+                allocator,
+                sel,
+                row,
+            ) catch return EvalError.UnsupportedExpression;
         },
 
         .exists => |ex| {
             const cat = catalog orelse return EvalError.UnsupportedExpression;
             const ev_ptr = cat.subquery_evaluator orelse return EvalError.UnsupportedExpression;
             const evaluator: *SubqueryEvaluator = @ptrCast(@alignCast(ev_ptr));
-            const found = evaluator.evalExists(allocator, ex.subquery, row) catch return EvalError.UnsupportedExpression;
+            const found = evaluator.evalExists(
+                allocator,
+                ex.subquery,
+                row,
+            ) catch return EvalError.UnsupportedExpression;
             return .{ .boolean = if (ex.negated) !found else found };
         },
 
@@ -2132,7 +2248,8 @@ fn evalRowComparison(op: ast.BinaryOp, left: []const Value, right: []const Value
     if (left.len != right.len) return .null_value;
     switch (op) {
         .equal => {
-            // TRUE iff all elements equal; UNKNOWN if any NULL pair; FALSE if any non-equal non-NULL
+            // TRUE iff all elements equal; UNKNOWN if any NULL pair; FALSE if any non-equal
+            // non-NULL
             var has_unknown = false;
             for (left, right) |lv, rv| {
                 if (lv == .null_value or rv == .null_value) {
@@ -2211,10 +2328,58 @@ fn evalUnaryOp(op: ast.UnaryOp, operand: Value) Value {
     };
 }
 
-// ── JSON operators ───────────────────────────────────────────────
+// ── JSON operators ─────────────────────────
+
+/// Formats `args` with the comptime `fmt` into a fresh allocation; failure maps to OOM.
+fn printAlloc(allocator: Allocator, comptime fmt: []const u8, args: anytype) EvalError![]u8 {
+    std.debug.assert(fmt.len > 0);
+    std.debug.assert(@typeInfo(@TypeOf(args)) == .@"struct");
+    return std.fmt.allocPrint(allocator, fmt, args) catch return EvalError.OutOfMemory;
+}
+
+/// Duplicates `bytes` into a fresh allocation; failure maps to OOM.
+fn dupeOom(allocator: Allocator, bytes: []const u8) EvalError![]u8 {
+    std.debug.assert(bytes.len < std.math.maxInt(u32));
+    return allocator.dupe(u8, bytes) catch return EvalError.OutOfMemory;
+}
+
+/// Serializes `value` as compact JSON text into a fresh allocation.
+fn jsonToOwned(allocator: Allocator, value: std.json.Value) EvalError![]u8 {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(allocator);
+
+    std.fmt.format(
+        buf.writer(allocator),
+        "{f}",
+        .{std.json.fmt(value, .{})},
+    ) catch return EvalError.OutOfMemory;
+    std.debug.assert(buf.items.len > 0);
+    return dupeOom(allocator, buf.items);
+}
+
+/// Parses a brace-delimited text path (e.g. "{a}") into a single-element path array.
+fn parseBracedTextPath(allocator: Allocator, t: []const u8) EvalError![]Value {
+    if (t.len < 2 or t[0] != '{' or t[t.len - 1] != '}') {
+        return EvalError.TypeError;
+    }
+    // For simplicity, create a single-element path
+    var arr = std.ArrayListUnmanaged(Value){};
+    const inner = t[1 .. t.len - 1];
+    arr.append(allocator, Value{ .text = try dupeOom(allocator, inner) }) catch {
+        return EvalError.OutOfMemory;
+    };
+    std.debug.assert(arr.items.len == 1);
+    std.debug.assert(arr.items[0] == .text);
+    return arr.items;
+}
 
 /// Extract JSON field by key: json -> 'key'
-fn evalJsonExtract(allocator: Allocator, json_val: Value, key: Value, as_text: bool) EvalError!Value {
+fn evalJsonExtract(
+    allocator: Allocator,
+    json_val: Value,
+    key: Value,
+    as_text: bool,
+) EvalError!Value {
     // NULL propagation
     if (json_val == .null_value or key == .null_value) return Value.null_value;
 
@@ -2265,28 +2430,19 @@ fn evalJsonExtract(allocator: Allocator, json_val: Value, key: Value, as_text: b
     if (as_text) {
         // Return as text (for ->> operator)
         const text_result = switch (result_json) {
-            .string => |s| allocator.dupe(u8, s) catch return EvalError.OutOfMemory,
-            .integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
-            .float => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
-            .bool => |b| allocator.dupe(u8, if (b) "true" else "false") catch return EvalError.OutOfMemory,
+            .string => |s| try dupeOom(allocator, s),
+            .integer => |v| try printAlloc(allocator, "{d}", .{v}),
+            .float => |v| try printAlloc(allocator, "{d}", .{v}),
+            .bool => |b| try dupeOom(allocator, if (b) "true" else "false"),
             .null => return Value.null_value,
-            .number_string => |s| allocator.dupe(u8, s) catch return EvalError.OutOfMemory,
-            .object, .array => blk: {
-                // For objects/arrays, serialize back to JSON
-                var buf = std.ArrayListUnmanaged(u8){};
-                defer buf.deinit(allocator);
-                std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
-                break :blk allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
-            },
+            .number_string => |s| try dupeOom(allocator, s),
+            // For objects/arrays, serialize back to JSON
+            .object, .array => try jsonToOwned(allocator, result_json),
         };
         return Value{ .text = text_result };
     } else {
         // Return as text (JSON stored as text)
-        var buf = std.ArrayListUnmanaged(u8){};
-        defer buf.deinit(allocator);
-        std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
-        const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
-        return Value{ .text = json_result };
+        return Value{ .text = try jsonToOwned(allocator, result_json) };
     }
 }
 
@@ -2573,7 +2729,12 @@ fn evalJsonAllKeysExist(json_val: Value, keys: Value) EvalError!Value {
 }
 
 /// Extract JSON by path array: json #> '{a,b}'
-fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_text: bool) EvalError!Value {
+fn evalJsonPathExtract(
+    allocator: Allocator,
+    json_val: Value,
+    path: Value,
+    as_text: bool,
+) EvalError!Value {
     // NULL propagation
     if (json_val == .null_value or path == .null_value) return Value.null_value;
 
@@ -2587,17 +2748,7 @@ fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_te
     // Get path array
     const path_arr = switch (path) {
         .array => |a| a,
-        .text => |t| blk: {
-            // Parse text as array (e.g., "{a,b}" -> ["a", "b"])
-            if (t.len < 2 or t[0] != '{' or t[t.len - 1] != '}') {
-                return EvalError.TypeError;
-            }
-            // For simplicity, create a single-element path
-            var arr = std.ArrayListUnmanaged(Value){};
-            const inner = t[1 .. t.len - 1];
-            arr.append(allocator, Value{ .text = allocator.dupe(u8, inner) catch return EvalError.OutOfMemory }) catch return EvalError.OutOfMemory;
-            break :blk arr.items;
-        },
+        .text => |t| try parseBracedTextPath(allocator, t),
         else => return EvalError.TypeError,
     };
 
@@ -2619,7 +2770,10 @@ fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_te
                 // Array index
                 const idx: usize = @intCast(v);
                 current = switch (current) {
-                    .array => |arr| if (idx < arr.items.len) arr.items[idx] else return Value.null_value,
+                    .array => |arr| if (idx < arr.items.len)
+                        arr.items[idx]
+                    else
+                        return Value.null_value,
                     else => return Value.null_value,
                 };
                 continue;
@@ -2630,7 +2784,8 @@ fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_te
         current = switch (current) {
             .object => |obj| obj.get(key) orelse return Value.null_value,
             .array => |arr| blk: {
-                // When the current node is an array, try parsing the text key as an integer index (0-based)
+                // When the current node is an array, try parsing the text key as an integer index
+                // (0-based)
                 const idx = std.fmt.parseInt(usize, key, 10) catch return Value.null_value;
                 break :blk if (idx < arr.items.len) arr.items[idx] else return Value.null_value;
             },
@@ -2641,25 +2796,16 @@ fn evalJsonPathExtract(allocator: Allocator, json_val: Value, path: Value, as_te
     // Convert result to Value
     if (as_text) {
         const text_result = switch (current) {
-            .string => |s| allocator.dupe(u8, s) catch return EvalError.OutOfMemory,
-            .integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
-            .float => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
-            .bool => |b| allocator.dupe(u8, if (b) "true" else "false") catch return EvalError.OutOfMemory,
+            .string => |s| try dupeOom(allocator, s),
+            .integer => |v| try printAlloc(allocator, "{d}", .{v}),
+            .float => |v| try printAlloc(allocator, "{d}", .{v}),
+            .bool => |b| try dupeOom(allocator, if (b) "true" else "false"),
             .null => return Value.null_value,
-            else => blk: {
-                var buf = std.ArrayListUnmanaged(u8){};
-                defer buf.deinit(allocator);
-                std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
-                break :blk allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
-            },
+            else => try jsonToOwned(allocator, current),
         };
         return Value{ .text = text_result };
     } else {
-        var buf = std.ArrayListUnmanaged(u8){};
-        defer buf.deinit(allocator);
-        std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
-        const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
-        return Value{ .text = json_result };
+        return Value{ .text = try jsonToOwned(allocator, current) };
     }
 }
 
@@ -2678,22 +2824,13 @@ fn evalJsonDeletePath(allocator: Allocator, json_val: Value, path: Value) EvalEr
     // Get path array
     const path_arr = switch (path) {
         .array => |a| a,
-        .text => |t| blk: {
-            // Parse text as array (e.g., "{a}" -> ["a"])
-            if (t.len < 2 or t[0] != '{' or t[t.len - 1] != '}') {
-                return EvalError.TypeError;
-            }
-            var arr = std.ArrayListUnmanaged(Value){};
-            const inner = t[1 .. t.len - 1];
-            arr.append(allocator, Value{ .text = allocator.dupe(u8, inner) catch return EvalError.OutOfMemory }) catch return EvalError.OutOfMemory;
-            break :blk arr.items;
-        },
+        .text => |t| try parseBracedTextPath(allocator, t),
         else => return EvalError.TypeError,
     };
 
     if (path_arr.len == 0) {
         // Empty path - return original JSON
-        return Value{ .text = allocator.dupe(u8, json_text) catch return EvalError.OutOfMemory };
+        return Value{ .text = try dupeOom(allocator, json_text) };
     }
 
     // Parse JSON
@@ -2716,7 +2853,7 @@ fn evalJsonDeletePath(allocator: Allocator, json_val: Value, path: Value) EvalEr
         // Clone the object without the specified key
         const obj = switch (parsed.value) {
             .object => |o| o,
-            else => return Value{ .text = allocator.dupe(u8, json_text) catch return EvalError.OutOfMemory },
+            else => return Value{ .text = try dupeOom(allocator, json_text) },
         };
 
         // Build new object without the key
@@ -2730,15 +2867,11 @@ fn evalJsonDeletePath(allocator: Allocator, json_val: Value, path: Value) EvalEr
 
         // Serialize result
         const new_value = std.json.Value{ .object = new_obj };
-        var buf = std.ArrayListUnmanaged(u8){};
-        defer buf.deinit(allocator);
-        std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(new_value, .{})}) catch return EvalError.OutOfMemory;
-        const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
-        return Value{ .text = json_result };
+        return Value{ .text = try jsonToOwned(allocator, new_value) };
     } else {
         // Multi-level path deletion not yet implemented
         // For now, return original JSON unchanged
-        return Value{ .text = allocator.dupe(u8, json_text) catch return EvalError.OutOfMemory };
+        return Value{ .text = try dupeOom(allocator, json_text) };
     }
 }
 
@@ -2755,9 +2888,10 @@ fn evalJsonArrayLength(json_val: Value) EvalError!Value {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
-        return .null_value;
-    };
+    const parsed =
+        std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
+            return .null_value;
+        };
 
     if (parsed.value == .array) {
         return Value{ .integer = @intCast(parsed.value.array.items.len) };
@@ -2769,9 +2903,16 @@ fn evalJsonArrayLength(json_val: Value) EvalError!Value {
 /// Convert a Value to a JSON string representation
 fn valueToJsonString(allocator: Allocator, v: Value) EvalError![]const u8 {
     return switch (v) {
-        .integer => |i| std.fmt.allocPrint(allocator, "{d}", .{i}) catch return EvalError.OutOfMemory,
+        .integer => |i| std.fmt.allocPrint(
+            allocator,
+            "{d}",
+            .{i},
+        ) catch return EvalError.OutOfMemory,
         .real => |r| std.fmt.allocPrint(allocator, "{d}", .{r}) catch return EvalError.OutOfMemory,
-        .boolean => |b| if (b) allocator.dupe(u8, "true") else allocator.dupe(u8, "false") catch return EvalError.OutOfMemory,
+        .boolean => |b| if (b) allocator.dupe(u8, "true") else allocator.dupe(
+            u8,
+            "false",
+        ) catch return EvalError.OutOfMemory,
         .text => |t| blk: {
             // Escape and quote the string
             var buf = std.ArrayListUnmanaged(u8){};
@@ -2789,6 +2930,19 @@ fn valueToJsonString(allocator: Allocator, v: Value) EvalError![]const u8 {
         .null_value => allocator.dupe(u8, "null") catch return EvalError.OutOfMemory,
         else => allocator.dupe(u8, "null") catch return EvalError.OutOfMemory,
     };
+}
+
+/// Appends a newline followed by `indent` levels of four spaces.
+fn appendNewlineIndent(
+    allocator: Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    indent: usize,
+) Allocator.Error!void {
+    std.debug.assert(indent < 1024);
+    try out.append(allocator, '\n');
+    var k: usize = 0;
+    while (k < indent * 4) : (k += 1) try out.append(allocator, ' ');
+    std.debug.assert(out.items.len >= indent * 4 + 1);
 }
 
 /// Pretty-print a compact JSON string: adds newlines and 4-space indentation.
@@ -2826,21 +2980,18 @@ fn prettyPrintJsonCompact(allocator: Allocator, compact: []const u8) EvalError!V
                     // Empty container — keep on same line
                 } else {
                     indent += 1;
-                    try result.append(allocator, '\n');
-                    var k: usize = 0;
-                    while (k < indent * 4) : (k += 1) try result.append(allocator, ' ');
+                    try appendNewlineIndent(allocator, &result, indent);
                 }
             },
             '}', ']' => {
                 // Check if we just opened (empty container)
                 var j: usize = result.items.len;
-                while (j > 0 and (result.items[j - 1] == ' ' or result.items[j - 1] == '\n')) j -= 1;
+                while (j > 0 and
+                    (result.items[j - 1] == ' ' or result.items[j - 1] == '\n')) j -= 1;
                 const last = if (j > 0) result.items[j - 1] else 0;
                 if (last != '{' and last != '[') {
                     if (indent > 0) indent -= 1;
-                    try result.append(allocator, '\n');
-                    var k: usize = 0;
-                    while (k < indent * 4) : (k += 1) try result.append(allocator, ' ');
+                    try appendNewlineIndent(allocator, &result, indent);
                 } else {
                     if (indent > 0) indent -= 1;
                 }
@@ -2852,9 +3003,7 @@ fn prettyPrintJsonCompact(allocator: Allocator, compact: []const u8) EvalError!V
             },
             ',' => {
                 try result.append(allocator, ',');
-                try result.append(allocator, '\n');
-                var k: usize = 0;
-                while (k < indent * 4) : (k += 1) try result.append(allocator, ' ');
+                try appendNewlineIndent(allocator, &result, indent);
             },
             ' ', '\t', '\n', '\r' => {},
             else => try result.append(allocator, c),
@@ -2938,6 +3087,39 @@ fn sqlValueToJsonValue(arena: Allocator, v: Value) Allocator.Error!std.json.Valu
     };
 }
 
+/// Copies `obj` with the value at `key` replaced by the recursive set of `new_json` along `rest`.
+/// A missing key is created (as a nested path) only when `create_missing` is set.
+fn jsonObjSet(
+    arena: Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    rest: []const Value,
+    new_json: std.json.Value,
+    create_missing: bool,
+) Allocator.Error!std.json.Value {
+    var new_obj = std.json.ObjectMap.init(arena);
+    var found = false;
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        const key_dup = try arena.dupe(u8, entry.key_ptr.*);
+        if (std.mem.eql(u8, entry.key_ptr.*, key)) {
+            found = true;
+            const sub = try jsonSetAtPath(arena, entry.value_ptr.*, rest, new_json, create_missing);
+            try new_obj.put(key_dup, sub);
+        } else {
+            try new_obj.put(key_dup, entry.value_ptr.*);
+        }
+    }
+    if (!found and create_missing) {
+        const key_dup = try arena.dupe(u8, key);
+        const sub = try jsonSetAtPath(arena, .null, rest, new_json, create_missing);
+        try new_obj.put(key_dup, sub);
+    }
+    std.debug.assert(new_obj.count() >= obj.count());
+    std.debug.assert(new_obj.count() <= obj.count() + 1);
+    return .{ .object = new_obj };
+}
+
 /// Recursively set new_json at the given path within a JSON tree.
 /// create_missing: if true, create intermediate objects for missing keys.
 fn jsonSetAtPath(
@@ -2953,30 +3135,15 @@ fn jsonSetAtPath(
         .text => |k| {
             const rest = path[1..];
             switch (value) {
-                .object => |obj| {
-                    var new_obj = std.json.ObjectMap.init(arena);
-                    var found = false;
-                    var it = obj.iterator();
-                    while (it.next()) |entry| {
-                        const key_dup = try arena.dupe(u8, entry.key_ptr.*);
-                        if (std.mem.eql(u8, entry.key_ptr.*, k)) {
-                            found = true;
-                            try new_obj.put(key_dup, try jsonSetAtPath(arena, entry.value_ptr.*, rest, new_json, create_missing));
-                        } else {
-                            try new_obj.put(key_dup, entry.value_ptr.*);
-                        }
-                    }
-                    if (!found and create_missing) {
-                        const key_dup = try arena.dupe(u8, k);
-                        try new_obj.put(key_dup, try jsonSetAtPath(arena, .null, rest, new_json, create_missing));
-                    }
-                    return .{ .object = new_obj };
-                },
+                .object => |obj| return jsonObjSet(arena, obj, k, rest, new_json, create_missing),
                 else => {
                     if (!create_missing) return value;
                     var new_obj = std.json.ObjectMap.init(arena);
                     const key_dup = try arena.dupe(u8, k);
-                    try new_obj.put(key_dup, try jsonSetAtPath(arena, .null, path[1..], new_json, create_missing));
+                    try new_obj.put(
+                        key_dup,
+                        try jsonSetAtPath(arena, .null, path[1..], new_json, create_missing),
+                    );
                     return .{ .object = new_obj };
                 },
             }
@@ -2992,7 +3159,13 @@ fn jsonSetAtPath(
                     var new_arr = std.json.Array.init(arena);
                     for (arr.items, 0..) |item, i| {
                         if (i == idx) {
-                            try new_arr.append(try jsonSetAtPath(arena, item, rest, new_json, create_missing));
+                            try new_arr.append(try jsonSetAtPath(
+                                arena,
+                                item,
+                                rest,
+                                new_json,
+                                create_missing,
+                            ));
                         } else {
                             try new_arr.append(item);
                         }
@@ -3004,6 +3177,34 @@ fn jsonSetAtPath(
         },
         else => return value,
     }
+}
+
+/// Copies `obj` and adds `path[0]` (= `k`, absent from `obj`): the leaf value is `new_json`,
+/// deeper paths recurse into a fresh null value.
+fn jsonObjInsert(
+    arena: Allocator,
+    obj: std.json.ObjectMap,
+    k: []const u8,
+    path: []const Value,
+    new_json: std.json.Value,
+    insert_after: bool,
+) Allocator.Error!std.json.Value {
+    std.debug.assert(path.len >= 1);
+    std.debug.assert(obj.get(k) == null);
+    var new_obj = std.json.ObjectMap.init(arena);
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        const key_dup = try arena.dupe(u8, entry.key_ptr.*);
+        try new_obj.put(key_dup, entry.value_ptr.*);
+    }
+    const key_dup = try arena.dupe(u8, k);
+    // Leaf: insert new_json directly; deeper path: recurse
+    const nested_val = if (path.len == 1)
+        new_json
+    else
+        try jsonInsertAtPath(arena, .null, path[1..], new_json, insert_after);
+    try new_obj.put(key_dup, nested_val);
+    return .{ .object = new_obj };
 }
 
 /// Recursively insert new_json at the given path in a JSON tree.
@@ -3023,20 +3224,7 @@ fn jsonInsertAtPath(
                 .object => |obj| {
                     // For objects, only insert if key does not exist
                     if (obj.get(k) != null) return value; // key exists, no-op
-                    var new_obj = std.json.ObjectMap.init(arena);
-                    var it = obj.iterator();
-                    while (it.next()) |entry| {
-                        const key_dup = try arena.dupe(u8, entry.key_ptr.*);
-                        try new_obj.put(key_dup, entry.value_ptr.*);
-                    }
-                    const key_dup = try arena.dupe(u8, k);
-                    // Leaf: insert new_json directly; deeper path: recurse
-                    const nested_val = if (path.len == 1)
-                        new_json
-                    else
-                        try jsonInsertAtPath(arena, .null, path[1..], new_json, insert_after);
-                    try new_obj.put(key_dup, nested_val);
-                    return .{ .object = new_obj };
+                    return jsonObjInsert(arena, obj, k, path, new_json, insert_after);
                 },
                 else => return value,
             }
@@ -3067,7 +3255,13 @@ fn jsonInsertAtPath(
                         var new_arr = std.json.Array.init(arena);
                         for (arr.items, 0..) |item, i| {
                             if (i == idx) {
-                                try new_arr.append(try jsonInsertAtPath(arena, item, path[1..], new_json, insert_after));
+                                try new_arr.append(try jsonInsertAtPath(
+                                    arena,
+                                    item,
+                                    path[1..],
+                                    new_json,
+                                    insert_after,
+                                ));
                             } else {
                                 try new_arr.append(item);
                             }
@@ -3083,7 +3277,12 @@ fn jsonInsertAtPath(
 }
 
 /// Set value in JSON at path: json_set(target, path_array, new_value [, create_missing])
-fn evalJsonSet(allocator: Allocator, json_val: Value, path_val: Value, new_val: Value) EvalError!Value {
+fn evalJsonSet(
+    allocator: Allocator,
+    json_val: Value,
+    path_val: Value,
+    new_val: Value,
+) EvalError!Value {
     if (json_val == .null_value or path_val == .null_value) return Value.null_value;
 
     const json_text = switch (json_val) {
@@ -3102,19 +3301,35 @@ fn evalJsonSet(allocator: Allocator, json_val: Value, path_val: Value, new_val: 
         else => return EvalError.TypeError,
     };
 
-    const parsed = std.json.parseFromSlice(std.json.Value, aa, json_text, .{}) catch return EvalError.TypeError;
+    const parsed = std.json.parseFromSlice(
+        std.json.Value,
+        aa,
+        json_text,
+        .{},
+    ) catch return EvalError.TypeError;
     const new_json = sqlValueToJsonValue(aa, new_val) catch return EvalError.OutOfMemory;
-    const result_json = jsonSetAtPath(aa, parsed.value, path, new_json, true) catch return EvalError.OutOfMemory;
+    const result_json =
+        jsonSetAtPath(aa, parsed.value, path, new_json, true) catch return EvalError.OutOfMemory;
 
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(aa);
-    std.fmt.format(buf.writer(aa), "{f}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
+    std.fmt.format(
+        buf.writer(aa),
+        "{f}",
+        .{std.json.fmt(result_json, .{})},
+    ) catch return EvalError.OutOfMemory;
     const result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
     return Value{ .text = result };
 }
 
 /// Insert value in JSON at path: json_insert(target, path_array, new_value [, insert_after])
-fn evalJsonInsert(allocator: Allocator, json_val: Value, path_val: Value, new_val: Value, insert_after: bool) EvalError!Value {
+fn evalJsonInsert(
+    allocator: Allocator,
+    json_val: Value,
+    path_val: Value,
+    new_val: Value,
+    insert_after: bool,
+) EvalError!Value {
     if (json_val == .null_value or path_val == .null_value) return Value.null_value;
 
     const json_text = switch (json_val) {
@@ -3133,13 +3348,28 @@ fn evalJsonInsert(allocator: Allocator, json_val: Value, path_val: Value, new_va
         else => return EvalError.TypeError,
     };
 
-    const parsed = std.json.parseFromSlice(std.json.Value, aa, json_text, .{}) catch return EvalError.TypeError;
+    const parsed = std.json.parseFromSlice(
+        std.json.Value,
+        aa,
+        json_text,
+        .{},
+    ) catch return EvalError.TypeError;
     const new_json = sqlValueToJsonValue(aa, new_val) catch return EvalError.OutOfMemory;
-    const result_json = jsonInsertAtPath(aa, parsed.value, path, new_json, insert_after) catch return EvalError.OutOfMemory;
+    const result_json = jsonInsertAtPath(
+        aa,
+        parsed.value,
+        path,
+        new_json,
+        insert_after,
+    ) catch return EvalError.OutOfMemory;
 
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(aa);
-    std.fmt.format(buf.writer(aa), "{f}", .{std.json.fmt(result_json, .{})}) catch return EvalError.OutOfMemory;
+    std.fmt.format(
+        buf.writer(aa),
+        "{f}",
+        .{std.json.fmt(result_json, .{})},
+    ) catch return EvalError.OutOfMemory;
     const result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
     return Value{ .text = result };
 }
@@ -3185,17 +3415,26 @@ fn evalTsMatch(tsvector: Value, tsquery: Value) Value {
     return Value{ .boolean = true };
 }
 
-// ──────────────────────────────────────────────────────────────────
+// ────────────────────────────────
+
+/// True for the six SQL comparison operators (the ones with row-constructor semantics).
+fn isComparisonOp(op: ast.BinaryOp) bool {
+    return switch (op) {
+        .equal,
+        .not_equal,
+        .less_than,
+        .greater_than,
+        .less_than_or_equal,
+        .greater_than_or_equal,
+        => true,
+        else => false,
+    };
+}
 
 fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Value) EvalError!Value {
     // Row constructor comparison: both arrays, comparison op → SQL NULL semantics
-    if (left == .array and right == .array) {
-        switch (op) {
-            .equal, .not_equal, .less_than, .greater_than, .less_than_or_equal, .greater_than_or_equal => {
-                return evalRowComparison(op, left.array, right.array);
-            },
-            else => {},
-        }
+    if (left == .array and right == .array and isComparisonOp(op)) {
+        return evalRowComparison(op, left.array, right.array);
     }
 
     // NULL propagation for most ops
@@ -3315,6 +3554,34 @@ fn evalBinaryOp(allocator: Allocator, op: ast.BinaryOp, left: Value, right: Valu
 
 const ArithOp = enum { add, sub, mul, div };
 
+/// interval +/- interval, wrapping per field.
+fn addSubIntervals(a: Value.Interval, b: Value.Interval, op: ArithOp) Value {
+    std.debug.assert(op == .add or op == .sub);
+    const is_add = op == .add;
+    return .{ .interval = .{
+        .months = if (is_add) a.months +% b.months else a.months -% b.months,
+        .days = if (is_add) a.days +% b.days else a.days -% b.days,
+        .micros = if (is_add) a.micros +% b.micros else a.micros -% b.micros,
+    } };
+}
+
+/// Numeric arithmetic on two operands already aligned to a common scale.
+fn numericArith(op: ArithOp, aligned: AlignedNumerics) Value {
+    std.debug.assert(aligned.scale <= 38);
+    return switch (op) {
+        .add => .{ .numeric = .{ .value = aligned.av +% aligned.bv, .scale = aligned.scale } },
+        .sub => .{ .numeric = .{ .value = aligned.av -% aligned.bv, .scale = aligned.scale } },
+        .mul => .{ .numeric = .{
+            .value = @divTrunc(aligned.av *% aligned.bv, powI128(10, aligned.scale)),
+            .scale = aligned.scale,
+        } },
+        .div => .{ .numeric = .{
+            .value = @divTrunc(aligned.av *% powI128(10, aligned.scale), aligned.bv),
+            .scale = aligned.scale,
+        } },
+    };
+}
+
 fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
     // Date/timestamp arithmetic with integers
     if (left == .date and right == .integer) {
@@ -3332,8 +3599,7 @@ fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
     if (left == .interval and right == .interval) {
         const a = left.interval;
         const b = right.interval;
-        if (op == .add) return .{ .interval = .{ .months = a.months +% b.months, .days = a.days +% b.days, .micros = a.micros +% b.micros } };
-        if (op == .sub) return .{ .interval = .{ .months = a.months -% b.months, .days = a.days -% b.days, .micros = a.micros -% b.micros } };
+        if (op == .add or op == .sub) return addSubIntervals(a, b, op);
     }
 
     // date +/- interval → date (if no time component) or timestamp (if time component)
@@ -3354,7 +3620,10 @@ fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
     if (left == .timestamp and right == .interval) {
         const iv = right.interval;
         if (op == .add) return .{ .timestamp = addIntervalToTimestamp(left.timestamp, iv) };
-        if (op == .sub) return .{ .timestamp = addIntervalToTimestamp(left.timestamp, negateInterval(iv)) };
+        if (op == .sub) return .{ .timestamp = addIntervalToTimestamp(
+            left.timestamp,
+            negateInterval(iv),
+        ) };
     }
 
     // interval + date/timestamp (commutative for add)
@@ -3375,46 +3644,43 @@ fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
     if (left == .interval and right == .integer) {
         const iv = left.interval;
         const n = @as(i32, @intCast(right.integer));
-        if (op == .mul) return .{ .interval = .{ .months = iv.months *% n, .days = iv.days *% n, .micros = iv.micros *% @as(i64, right.integer) } };
-        if (op == .div) return .{ .interval = .{ .months = @divTrunc(iv.months, n), .days = @divTrunc(iv.days, n), .micros = @divTrunc(iv.micros, right.integer) } };
+        if (op == .mul) return .{ .interval = .{
+            .months = iv.months *% n,
+            .days = iv.days *% n,
+            .micros = iv.micros *% @as(i64, right.integer),
+        } };
+        if (op == .div) return .{ .interval = .{
+            .months = @divTrunc(iv.months, n),
+            .days = @divTrunc(iv.days, n),
+            .micros = @divTrunc(iv.micros, right.integer),
+        } };
     }
     if (left == .integer and right == .interval and op == .mul) {
         const iv = right.interval;
         const n = @as(i32, @intCast(left.integer));
-        return .{ .interval = .{ .months = iv.months *% n, .days = iv.days *% n, .micros = iv.micros *% left.integer } };
+        return .{ .interval = .{
+            .months = iv.months *% n,
+            .days = iv.days *% n,
+            .micros = iv.micros *% left.integer,
+        } };
     }
 
     // Numeric arithmetic
     if (left == .numeric and right == .numeric) {
         const aligned = alignScale(left.numeric, right.numeric);
-        return switch (op) {
-            .add => .{ .numeric = .{ .value = aligned.av +% aligned.bv, .scale = aligned.scale } },
-            .sub => .{ .numeric = .{ .value = aligned.av -% aligned.bv, .scale = aligned.scale } },
-            .mul => .{ .numeric = .{ .value = @divTrunc(aligned.av *% aligned.bv, powI128(10, aligned.scale)), .scale = aligned.scale } },
-            .div => .{ .numeric = .{ .value = @divTrunc(aligned.av *% powI128(10, aligned.scale), aligned.bv), .scale = aligned.scale } },
-        };
+        return numericArith(op, aligned);
     }
     // numeric op integer → numeric
     if (left == .numeric and right == .integer) {
         const bn = intToNumeric(right.integer, left.numeric.scale);
         const aligned = alignScale(left.numeric, bn);
-        return switch (op) {
-            .add => .{ .numeric = .{ .value = aligned.av +% aligned.bv, .scale = aligned.scale } },
-            .sub => .{ .numeric = .{ .value = aligned.av -% aligned.bv, .scale = aligned.scale } },
-            .mul => .{ .numeric = .{ .value = @divTrunc(aligned.av *% aligned.bv, powI128(10, aligned.scale)), .scale = aligned.scale } },
-            .div => .{ .numeric = .{ .value = @divTrunc(aligned.av *% powI128(10, aligned.scale), aligned.bv), .scale = aligned.scale } },
-        };
+        return numericArith(op, aligned);
     }
     // integer op numeric → numeric
     if (left == .integer and right == .numeric) {
         const an = intToNumeric(left.integer, right.numeric.scale);
         const aligned = alignScale(an, right.numeric);
-        return switch (op) {
-            .add => .{ .numeric = .{ .value = aligned.av +% aligned.bv, .scale = aligned.scale } },
-            .sub => .{ .numeric = .{ .value = aligned.av -% aligned.bv, .scale = aligned.scale } },
-            .mul => .{ .numeric = .{ .value = @divTrunc(aligned.av *% aligned.bv, powI128(10, aligned.scale)), .scale = aligned.scale } },
-            .div => .{ .numeric = .{ .value = @divTrunc(aligned.av *% powI128(10, aligned.scale), aligned.bv), .scale = aligned.scale } },
-        };
+        return numericArith(op, aligned);
     }
 
     // Try integer arithmetic
@@ -3440,30 +3706,38 @@ fn evalArithmetic(left: Value, right: Value, op: ArithOp) Value {
     } };
 }
 
+/// CAST(val AS TEXT/VARCHAR); NULL and blob inputs yield NULL.
+fn castToText(allocator: Allocator, val: Value) EvalError!Value {
+    std.debug.assert(@intFromEnum(val) >= 0);
+    const s = switch (val) {
+        .integer => |v| try printAlloc(allocator, "{d}", .{v}),
+        .real => |v| try printAlloc(allocator, "{d}", .{v}),
+        .boolean => |v| try dupeOom(allocator, if (v) "true" else "false"),
+        .text => |v| try dupeOom(allocator, v),
+        .date => |v| formatDate(allocator, v) catch return EvalError.OutOfMemory,
+        .time => |v| formatTime(allocator, v) catch return EvalError.OutOfMemory,
+        .timestamp => |v| formatTimestamp(allocator, v) catch return EvalError.OutOfMemory,
+        .interval => |v| formatInterval(allocator, v) catch return EvalError.OutOfMemory,
+        .numeric => |v| formatNumeric(allocator, v) catch return EvalError.OutOfMemory,
+        .uuid => |v| formatUuid(allocator, v) catch return EvalError.OutOfMemory,
+        .array => |v| formatArray(allocator, v) catch return EvalError.OutOfMemory,
+        .tsvector => |v| try dupeOom(allocator, v),
+        .tsquery => |v| try dupeOom(allocator, v),
+        .null_value => return .null_value,
+        .blob => return .null_value,
+    };
+    return Value{ .text = s };
+}
+
 fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Value {
     return switch (target) {
-        .type_integer, .type_int, .type_serial, .type_bigserial => .{ .integer = val.toInteger() orelse return .null_value },
+        .type_integer,
+        .type_int,
+        .type_serial,
+        .type_bigserial,
+        => .{ .integer = val.toInteger() orelse return .null_value },
         .type_real => .{ .real = val.toReal() orelse return .null_value },
-        .type_text, .type_varchar => blk: {
-            const s = switch (val) {
-                .integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
-                .real => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
-                .boolean => |v| (allocator.dupe(u8, if (v) "true" else "false") catch return EvalError.OutOfMemory),
-                .text => |v| (allocator.dupe(u8, v) catch return EvalError.OutOfMemory),
-                .date => |v| formatDate(allocator, v) catch return EvalError.OutOfMemory,
-                .time => |v| formatTime(allocator, v) catch return EvalError.OutOfMemory,
-                .timestamp => |v| formatTimestamp(allocator, v) catch return EvalError.OutOfMemory,
-                .interval => |v| formatInterval(allocator, v) catch return EvalError.OutOfMemory,
-                .numeric => |v| formatNumeric(allocator, v) catch return EvalError.OutOfMemory,
-                .uuid => |v| formatUuid(allocator, v) catch return EvalError.OutOfMemory,
-                .array => |v| formatArray(allocator, v) catch return EvalError.OutOfMemory,
-                .tsvector => |v| (allocator.dupe(u8, v) catch return EvalError.OutOfMemory),
-                .tsquery => |v| (allocator.dupe(u8, v) catch return EvalError.OutOfMemory),
-                .null_value => return .null_value,
-                .blob => return .null_value,
-            };
-            break :blk Value{ .text = s };
-        },
+        .type_text, .type_varchar => try castToText(allocator, val),
         .type_boolean => .{ .boolean = val.isTruthy() },
         .type_blob => .null_value,
         .type_date => blk: {
@@ -3496,7 +3770,11 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
             const iv = switch (val) {
                 .text => |v| parseIntervalString(v) orelse return .null_value,
                 .interval => |v| v,
-                .integer => |v| Value.Interval{ .months = 0, .days = 0, .micros = v * MICROS_PER_SECOND },
+                .integer => |v| Value.Interval{
+                    .months = 0,
+                    .days = 0,
+                    .micros = v * MICROS_PER_SECOND,
+                },
                 else => return .null_value,
             };
             break :blk Value{ .interval = iv };
@@ -3532,10 +3810,10 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
             // For now, treat JSON/JSONB as text.
             // TODO: Add JSON validation and JSONB binary format in later commits.
             const json_text = switch (val) {
-                .text => |v| allocator.dupe(u8, v) catch return EvalError.OutOfMemory,
-                .integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
-                .real => |v| std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory,
-                .boolean => |v| allocator.dupe(u8, if (v) "true" else "false") catch return EvalError.OutOfMemory,
+                .text => |v| try dupeOom(allocator, v),
+                .integer => |v| try printAlloc(allocator, "{d}", .{v}),
+                .real => |v| try printAlloc(allocator, "{d}", .{v}),
+                .boolean => |v| try dupeOom(allocator, if (v) "true" else "false"),
                 .null_value => return .null_value,
                 else => return .null_value,
             };
@@ -3564,16 +3842,82 @@ fn evalCast(allocator: Allocator, val: Value, target: ast.DataType) EvalError!Va
     };
 }
 
-/// Format a timestamp (microseconds since epoch) using PostgreSQL-style format string.
-// SAFETY: every `std.fmt.bufPrint(...) catch unreachable` below writes a fixed-width
-// numeric field (2-4 digits) into a local `buf: [10]u8` or `[30]u8` — the field width is
-// bounded by the format specifier itself, so the buffer can never be too small.
-fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 {
-    const month_short = [12][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
-    const month_full = [12][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
-    const day_short = [7][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-    const day_full = [7][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+const month_short_names = [12][]const u8{
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+};
+const month_full_names = [12][]const u8{
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+};
+const day_short_names = [7][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+const day_full_names = [7][]const u8{
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+};
 
+/// Absolute value of a calendar year as an unsigned number (BC years are negative).
+fn yearAbs(year: i32) u32 {
+    std.debug.assert(year != std.math.minInt(i32));
+    return @intCast(if (year < 0) -year else year);
+}
+
+/// Appends `s` with every byte upper-cased (`upper`) or lower-cased.
+fn appendCased(
+    allocator: Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    s: []const u8,
+    upper: bool,
+) !void {
+    std.debug.assert(s.len < 64);
+    for (s) |c| {
+        try out.append(allocator, if (upper) std.ascii.toUpper(c) else std.ascii.toLower(c));
+    }
+}
+
+/// Appends one integer field formatted by the comptime `fmt` (for example "{d:0>2}").
+fn appendIntField(
+    allocator: Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    comptime fmt: []const u8,
+    value: anytype,
+) !void {
+    var buf: [30]u8 = undefined;
+    // SAFETY: callers pass fixed-width numeric fields (2-6 digits) or a u64 (at most 20
+    // digits); the format specifier bounds the width, so 30 bytes can never be too small.
+    const s = std.fmt.bufPrint(&buf, fmt, .{value}) catch unreachable;
+    std.debug.assert(s.len > 0);
+    std.debug.assert(s.len <= buf.len);
+    try out.appendSlice(allocator, s);
+}
+
+/// Format a timestamp (microseconds since epoch) using PostgreSQL-style format string.
+fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 {
     const ts_days = @divFloor(ts_micros, MICROS_PER_DAY);
     const time_micros = @mod(ts_micros, MICROS_PER_DAY);
     const dt = daysToDate(@intCast(ts_days));
@@ -3609,166 +3953,148 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
         }
         // 5-char patterns
         if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "MONTH")) {
-            for (month_full[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toUpper(c));
+            try appendCased(allocator, &out, month_full_names[@as(usize, dt.month) - 1], true);
             i += 5;
             continue;
         }
         if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "Month")) {
-            try out.appendSlice(allocator, month_full[@as(usize, dt.month) - 1]);
+            try out.appendSlice(allocator, month_full_names[@as(usize, dt.month) - 1]);
             i += 5;
             continue;
         }
         if (rest.len >= 5 and std.mem.eql(u8, rest[0..5], "month")) {
-            for (month_full[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toLower(c));
+            try appendCased(allocator, &out, month_full_names[@as(usize, dt.month) - 1], false);
             i += 5;
             continue;
         }
         // 4-char patterns
-        if (rest.len >= 4 and (std.mem.eql(u8, rest[0..4], "YYYY") or std.mem.eql(u8, rest[0..4], "IYYY"))) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>4}", .{@as(u32, @intCast(dt.year))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+        if (rest.len >= 4 and
+            (std.mem.eql(u8, rest[0..4], "YYYY") or std.mem.eql(u8, rest[0..4], "IYYY")))
+        {
+            try appendIntField(allocator, &out, "{d:0>4}", @as(u32, @intCast(dt.year)));
             i += 4;
             continue;
         }
         if (rest.len >= 4 and std.mem.eql(u8, rest[0..4], "HH24")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour24))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>2}", @as(u64, @intCast(hour24)));
             i += 4;
             continue;
         }
         if (rest.len >= 4 and std.mem.eql(u8, rest[0..4], "HH12")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour12))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>2}", @as(u64, @intCast(hour12)));
             i += 4;
             continue;
         }
         // 3-char patterns
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "MON")) {
-            for (month_short[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toUpper(c));
+            try appendCased(allocator, &out, month_short_names[@as(usize, dt.month) - 1], true);
             i += 3;
             continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "Mon")) {
-            try out.appendSlice(allocator, month_short[@as(usize, dt.month) - 1]);
+            try out.appendSlice(allocator, month_short_names[@as(usize, dt.month) - 1]);
             i += 3;
             continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "mon")) {
-            for (month_short[@as(usize, dt.month) - 1]) |c| try out.append(allocator, std.ascii.toLower(c));
+            try appendCased(allocator, &out, month_short_names[@as(usize, dt.month) - 1], false);
             i += 3;
             continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "DAY")) {
-            for (day_full[dow]) |c| try out.append(allocator, std.ascii.toUpper(c));
+            try appendCased(allocator, &out, day_full_names[dow], true);
             i += 3;
             continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "Day")) {
-            try out.appendSlice(allocator, day_full[dow]);
+            try out.appendSlice(allocator, day_full_names[dow]);
             i += 3;
             continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "day")) {
-            for (day_full[dow]) |c| try out.append(allocator, std.ascii.toLower(c));
+            try appendCased(allocator, &out, day_full_names[dow], false);
             i += 3;
             continue;
         }
         if (rest.len >= 3 and std.mem.eql(u8, rest[0..3], "YYY")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>3}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 1000)}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>3}", @mod(yearAbs(dt.year), 1000));
             i += 3;
             continue;
         }
         // 2-char patterns
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MM")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{dt.month}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>2}", dt.month);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "DD")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{dt.day}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>2}", dt.day);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "DY")) {
-            for (day_short[dow]) |c| try out.append(allocator, std.ascii.toUpper(c));
+            try appendCased(allocator, &out, day_short_names[dow], true);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "Dy")) {
-            try out.appendSlice(allocator, day_short[dow]);
+            try out.appendSlice(allocator, day_short_names[dow]);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "dy")) {
-            for (day_short[dow]) |c| try out.append(allocator, std.ascii.toLower(c));
+            try appendCased(allocator, &out, day_short_names[dow], false);
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "HH")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(hour12))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>2}", @as(u64, @intCast(hour12)));
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MI")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(minute))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>2}", @as(u64, @intCast(minute)));
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "SS")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u64, @intCast(second))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>2}", @as(u64, @intCast(second)));
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "MS")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>3}", .{@as(u64, @intCast(ms))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>3}", @as(u64, @intCast(ms)));
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "US")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>6}", .{@as(u64, @intCast(us))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>6}", @as(u64, @intCast(us)));
             i += 2;
             continue;
         }
-        if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "AM") or std.mem.eql(u8, rest[0..2], "PM"))) {
+        if (rest.len >= 2 and
+            (std.mem.eql(u8, rest[0..2], "AM") or std.mem.eql(u8, rest[0..2], "PM")))
+        {
             try out.appendSlice(allocator, if (hour24 >= 12) "PM" else "AM");
             i += 2;
             continue;
         }
-        if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "am") or std.mem.eql(u8, rest[0..2], "pm"))) {
+        if (rest.len >= 2 and
+            (std.mem.eql(u8, rest[0..2], "am") or std.mem.eql(u8, rest[0..2], "pm")))
+        {
             try out.appendSlice(allocator, if (hour24 >= 12) "pm" else "am");
             i += 2;
             continue;
         }
         if (rest.len >= 2 and std.mem.eql(u8, rest[0..2], "YY")) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 100)}) catch unreachable;
-            try out.appendSlice(allocator, s);
+            try appendIntField(allocator, &out, "{d:0>2}", @mod(yearAbs(dt.year), 100));
             i += 2;
             continue;
         }
-        if (rest.len >= 2 and (std.mem.eql(u8, rest[0..2], "IW") or std.mem.eql(u8, rest[0..2], "WW"))) {
-            var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-            const s = std.fmt.bufPrint(&buf, "{d:0>2}", .{@as(u32, @intCast(woy))}) catch unreachable;
-            try out.appendSlice(allocator, s);
+        if (rest.len >= 2 and
+            (std.mem.eql(u8, rest[0..2], "IW") or std.mem.eql(u8, rest[0..2], "WW")))
+        {
+            try appendIntField(allocator, &out, "{d:0>2}", @as(u32, @intCast(woy)));
             i += 2;
             continue;
         }
@@ -3784,37 +4110,32 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
         // 1-char patterns
         switch (rest[0]) {
             'Y' => {
-                var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-                const s = std.fmt.bufPrint(&buf, "{d}", .{@mod(@as(u32, @intCast(if (@as(i32, dt.year) < 0) -@as(i32, dt.year) else @as(i32, dt.year))), 10)}) catch unreachable;
-                try out.appendSlice(allocator, s);
+                try appendIntField(allocator, &out, "{d}", @mod(yearAbs(dt.year), 10));
                 i += 1;
                 continue;
             },
             'D' => {
-                var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-                const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(dow + 1))}) catch unreachable;
-                try out.appendSlice(allocator, s);
+                try appendIntField(allocator, &out, "{d}", @as(u32, @intCast(dow + 1)));
                 i += 1;
                 continue;
             },
             'Q' => {
-                var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-                const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(@divFloor(@as(i32, dt.month) - 1, 3) + 1))}) catch unreachable;
-                try out.appendSlice(allocator, s);
+                try appendIntField(
+                    allocator,
+                    &out,
+                    "{d}",
+                    @as(u32, @intCast(@divFloor(@as(i32, dt.month) - 1, 3) + 1)),
+                );
                 i += 1;
                 continue;
             },
             'W' => {
-                var buf: [10]u8 = undefined; // SAFETY: field <= 10 chars
-                const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u32, @intCast(wom))}) catch unreachable;
-                try out.appendSlice(allocator, s);
+                try appendIntField(allocator, &out, "{d}", @as(u32, @intCast(wom)));
                 i += 1;
                 continue;
             },
             'J' => {
-                var buf: [30]u8 = undefined; // SAFETY: u64 <= 20 chars
-                const s = std.fmt.bufPrint(&buf, "{d}", .{@as(u64, @intCast(ts_days + 2440588))}) catch unreachable;
-                try out.appendSlice(allocator, s);
+                try appendIntField(allocator, &out, "{d}", @as(u64, @intCast(ts_days + 2440588)));
                 i += 1;
                 continue;
             },
@@ -3825,6 +4146,16 @@ fn toCharTimestamp(allocator: Allocator, ts_micros: i64, fmt: []const u8) ![]u8 
         i += 1;
     }
     return out.toOwnedSlice(allocator);
+}
+
+/// Counts the digit placeholders ('9' or '0') in a number-format fragment.
+fn countDigitSlots(fmt_part: []const u8) usize {
+    var count: usize = 0;
+    for (fmt_part) |c| {
+        if (c == '9' or c == '0') count += 1;
+    }
+    std.debug.assert(count <= fmt_part.len);
+    return count;
 }
 
 /// Format a floating-point number using PostgreSQL-style format string.
@@ -3865,10 +4196,7 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
     }
 
     // Count fractional digit positions
-    var frac_digit_positions: usize = 0;
-    for (frac_fmt_part) |c| {
-        if (c == '9' or c == '0') frac_digit_positions += 1;
-    }
+    const frac_digit_positions = countDigitSlots(frac_fmt_part);
 
     // Get absolute value and sign
     const is_neg = value < 0;
@@ -3883,7 +4211,8 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
 
     // Format integer digits
     var int_buf: [32]u8 = undefined;
-    const int_str = std.fmt.bufPrint(&int_buf, "{d}", .{int_val}) catch unreachable; // SAFETY: i64 decimal (max 20 chars incl. sign) fits in 32-byte int_buf
+    // SAFETY: i64 decimal (max 20 chars incl. sign) fits in 32-byte int_buf
+    const int_str = std.fmt.bufPrint(&int_buf, "{d}", .{int_val}) catch unreachable;
 
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(allocator);
@@ -3925,8 +4254,9 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
     if (decimal_pos != null and frac_digit_positions > 0) {
         try out.append(allocator, '.');
         var frac_buf: [32]u8 = undefined;
-        const frac_raw = std.fmt.bufPrint(&frac_buf, "{d}", .{frac_val}) catch unreachable; // SAFETY: frac_val is bounded by `scale` (10^frac_digit_positions), decimal fits in 32-byte frac_buf
-        const frac_pad = if (frac_raw.len < frac_digit_positions) frac_digit_positions - frac_raw.len else 0;
+        // SAFETY: frac_val < 10^frac_digit_positions, so its decimal fits in 32-byte frac_buf
+        const frac_raw = std.fmt.bufPrint(&frac_buf, "{d}", .{frac_val}) catch unreachable;
+        const frac_pad = frac_digit_positions -| frac_raw.len;
         for (0..frac_pad) |_| try out.append(allocator, '0');
         try out.appendSlice(allocator, frac_raw[0..@min(frac_raw.len, frac_digit_positions)]);
     } else if (decimal_pos != null) {
@@ -3939,6 +4269,37 @@ fn toCharNumber(allocator: Allocator, value: f64, fmt: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+/// True for the three accepted month-abbreviation format tokens: "Mon", "MON", "mon".
+fn isMonthToken(token: []const u8) bool {
+    std.debug.assert(token.len == 3);
+    return std.mem.eql(u8, token, "Mon") or std.mem.eql(u8, token, "MON") or
+        std.mem.eql(u8, token, "mon");
+}
+
+/// Returns the 1-based month for a 3-letter abbreviation in any case, or null if unknown.
+fn monthFromAbbrev(abbrev: *const [3]u8) ?u8 {
+    const month_abbrevs = [12][]const u8{
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "may",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "oct",
+        "nov",
+        "dec",
+    };
+    var lower: [3]u8 = undefined;
+    for (0..3) |k| lower[k] = std.ascii.toLower(abbrev[k]);
+    for (month_abbrevs, 0..) |mn, idx| {
+        if (std.mem.eql(u8, &lower, mn)) return @intCast(idx + 1);
+    }
+    return null;
+}
+
 /// Parse a date/datetime string using a format template.
 /// Returns a struct with year/month/day/hour/minute/second components.
 fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
@@ -3949,7 +4310,6 @@ fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
     minute: i64,
     second: i64,
 } {
-    const month_abbrevs = [12][]const u8{ "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec" };
     var ti: usize = 0;
     var fi: usize = 0;
     var year: i32 = 1970;
@@ -3979,19 +4339,9 @@ fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
             continue;
         }
         // 3-char patterns
-        if (rf.len >= 3 and (std.mem.eql(u8, rf[0..3], "Mon") or std.mem.eql(u8, rf[0..3], "MON") or std.mem.eql(u8, rf[0..3], "mon"))) {
+        if (rf.len >= 3 and isMonthToken(rf[0..3])) {
             if (ti + 3 > text.len) return null;
-            var lower: [3]u8 = undefined;
-            for (0..3) |k| lower[k] = std.ascii.toLower(text[ti + k]);
-            var found = false;
-            for (month_abbrevs, 0..) |mn, idx| {
-                if (std.mem.eql(u8, &lower, mn)) {
-                    month = @intCast(idx + 1);
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) return null;
+            month = monthFromAbbrev(text[ti..][0..3]) orelse return null;
             ti += 3;
             fi += 3;
             continue;
@@ -4038,7 +4388,14 @@ fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
     if (month < 1 or month > 12) return null;
     if (day < 1 or day > daysInMonth(month, year)) return null;
 
-    return .{ .year = year, .month = month, .day = day, .hour = hour, .minute = minute, .second = second };
+    return .{
+        .year = year,
+        .month = month,
+        .day = day,
+        .hour = hour,
+        .minute = minute,
+        .second = second,
+    };
 }
 
 /// Parse a text string to a numeric value using a PostgreSQL-style format template.
@@ -4143,7 +4500,12 @@ fn countBTreeLeafPages(
     return leaf_count;
 }
 
-fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog: ?*Catalog) EvalError!Value {
+fn evalFunctionCall(
+    allocator: Allocator,
+    fc: anytype,
+    row: *const Row,
+    catalog: ?*Catalog,
+) EvalError!Value {
     // Aggregate functions: look up result by column name from the aggregate output row.
     // When an Aggregate operator has already computed COUNT/SUM/etc., the result is
     // stored as a named column. The Project operator just needs to retrieve it.
@@ -4320,7 +4682,9 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const micros_today = @mod(now, 86400) * MICROS_PER_SECOND;
         return Value{ .time = micros_today };
     }
-    if (std.ascii.eqlIgnoreCase(fc.name, "current_timestamp") or std.ascii.eqlIgnoreCase(fc.name, "now")) {
+    if (std.ascii.eqlIgnoreCase(fc.name, "current_timestamp") or
+        std.ascii.eqlIgnoreCase(fc.name, "now"))
+    {
         const now = std.time.timestamp();
         return Value{ .timestamp = now * MICROS_PER_SECOND };
     }
@@ -4410,7 +4774,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             const table_info = cat.getTable(table_name) catch return Value.null_value;
             defer table_info.deinit(allocator);
             if (table_info.data_root_page_id == 0) return Value{ .integer = 0 };
-            const leaf_pages = try countBTreeLeafPages(allocator, cat.pool, table_info.data_root_page_id);
+            const leaf_pages =
+                try countBTreeLeafPages(allocator, cat.pool, table_info.data_root_page_id);
             const page_size: i64 = @intCast(cat.pool.pager.page_size);
             return Value{ .integer = leaf_pages * page_size };
         }
@@ -4432,11 +4797,19 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             const page_size: i64 = @intCast(cat.pool.pager.page_size);
             var total_pages: i64 = 0;
             if (table_info.data_root_page_id != 0) {
-                total_pages += try countBTreeLeafPages(allocator, cat.pool, table_info.data_root_page_id);
+                total_pages += try countBTreeLeafPages(
+                    allocator,
+                    cat.pool,
+                    table_info.data_root_page_id,
+                );
             }
             for (table_info.indexes) |idx| {
                 if (idx.root_page_id != 0) {
-                    total_pages += countBTreeLeafPages(allocator, cat.pool, idx.root_page_id) catch 0;
+                    total_pages += countBTreeLeafPages(
+                        allocator,
+                        cat.pool,
+                        idx.root_page_id,
+                    ) catch 0;
                 }
             }
             return Value{ .integer = total_pages * page_size };
@@ -4509,7 +4882,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
     if (std.ascii.eqlIgnoreCase(fc.name, "to_tsvector")) {
         // to_tsvector([config,] text) - convert text to tsvector
         // For now, we support single-argument form (no config parameter)
-        const text_arg_idx: usize = if (fc.args.len == 2) 1 else if (fc.args.len == 1) 0 else return EvalError.TypeError;
+        const text_arg_idx: usize =
+            if (fc.args.len == 2) 1 else if (fc.args.len == 1) 0 else return EvalError.TypeError;
         if (fc.args.len > 2) return EvalError.TypeError;
 
         const arg = try evalExpr(allocator, fc.args[text_arg_idx], row, catalog);
@@ -4529,7 +4903,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
     if (std.ascii.eqlIgnoreCase(fc.name, "to_tsquery")) {
         // to_tsquery([config,] query) - convert query string to tsquery
-        const query_arg_idx: usize = if (fc.args.len == 2) 1 else if (fc.args.len == 1) 0 else return EvalError.TypeError;
+        const query_arg_idx: usize =
+            if (fc.args.len == 2) 1 else if (fc.args.len == 1) 0 else return EvalError.TypeError;
         if (fc.args.len > 2) return EvalError.TypeError;
 
         const arg = try evalExpr(allocator, fc.args[query_arg_idx], row, catalog);
@@ -4663,7 +5038,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             }
 
             // Evaluate arguments
-            const arg_values = allocator.alloc(Value, fc.args.len) catch return EvalError.OutOfMemory;
+            const arg_values =
+                allocator.alloc(Value, fc.args.len) catch return EvalError.OutOfMemory;
             defer allocator.free(arg_values);
             var inited_args: usize = 0;
             defer {
@@ -4679,8 +5055,14 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             // The body is a SQL expression (e.g., "UPPER($1) || ' ' || LOWER($2)")
             // We need to create a temporary row with parameter bindings
             var param_row = blk: {
-                const param_columns = allocator.alloc([]const u8, func_info.parameters.len) catch return EvalError.OutOfMemory;
-                const param_values = allocator.alloc(Value, func_info.parameters.len) catch return EvalError.OutOfMemory;
+                const param_columns = allocator.alloc(
+                    []const u8,
+                    func_info.parameters.len,
+                ) catch return EvalError.OutOfMemory;
+                const param_values = allocator.alloc(
+                    Value,
+                    func_info.parameters.len,
+                ) catch return EvalError.OutOfMemory;
 
                 for (func_info.parameters, 0..) |param, i| {
                     param_columns[i] = param.name;
@@ -4788,9 +5170,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         };
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
-        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
-            return .null_value;
-        };
+        const parsed =
+            std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
+                return .null_value;
+            };
         const type_name: []const u8 = switch (parsed.value) {
             .object => "object",
             .array => "array",
@@ -4817,9 +5200,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         };
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
-        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
-            return .null_value;
-        };
+        const parsed =
+            std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
+                return .null_value;
+            };
         const obj = switch (parsed.value) {
             .object => |o| o,
             else => return .null_value,
@@ -4854,7 +5238,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(allocator);
 
-        buf.append(allocator, '{') catch return EvalError.OutOfMemory;
+        buf.append(allocator, '\x7b') catch return EvalError.OutOfMemory;
 
         var first = true;
         var i: usize = 0;
@@ -4889,7 +5273,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             first = false;
         }
 
-        buf.append(allocator, '}') catch return EvalError.OutOfMemory;
+        buf.append(allocator, '\x7d') catch return EvalError.OutOfMemory;
         const result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
         return Value{ .text = result };
     }
@@ -4941,16 +5325,21 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
 
-        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
-            return .null_value;
-        };
+        const parsed =
+            std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch {
+                return .null_value;
+            };
 
         const stripped = try stripJsonNulls(arena.allocator(), parsed.value);
 
         // Serialize within the arena scope
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(arena.allocator());
-        std.fmt.format(buf.writer(arena.allocator()), "{f}", .{std.json.fmt(stripped, .{})}) catch return EvalError.OutOfMemory;
+        std.fmt.format(
+            buf.writer(arena.allocator()),
+            "{f}",
+            .{std.json.fmt(stripped, .{})},
+        ) catch return EvalError.OutOfMemory;
 
         // Copy result to main allocator before arena deinit
         const result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
@@ -5072,7 +5461,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             var buf = std.ArrayListUnmanaged(u8){};
             defer buf.deinit(allocator);
 
-            try buf.append(allocator, '{');
+            try buf.append(allocator, '\x7b');
             var found_any = false;
             var first_field = true;
 
@@ -5101,7 +5490,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                 try buf.appendSlice(allocator, val_json);
             }
 
-            try buf.append(allocator, '}');
+            try buf.append(allocator, '\x7d');
 
             if (!found_any) return Value.null_value;
 
@@ -5139,7 +5528,12 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const is_valid_json = blk: {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
-            const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json_text, .{}) catch break :blk false;
+            const parsed = std.json.parseFromSlice(
+                std.json.Value,
+                arena.allocator(),
+                json_text,
+                .{},
+            ) catch break :blk false;
             _ = parsed;
             break :blk true;
         };
@@ -5152,7 +5546,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
         for (json_text) |c| {
             switch (c) {
-                '{', '[' => {
+                '\x7b', '[' => {
                     try result.append(allocator, c);
                     try result.append(allocator, '\n');
                     indent_level += 1;
@@ -5161,7 +5555,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                         try result.append(allocator, ' ');
                     }
                 },
-                '}', ']' => {
+                '\x7d', ']' => {
                     if (indent_level > 0) indent_level -= 1;
                     try result.append(allocator, '\n');
                     var i: usize = 0;
@@ -5213,10 +5607,11 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
         if (fc.args.len == 1) {
             // Single array: alternating keys and values
-            const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), first_text, .{}) catch {
-                buf.deinit(allocator);
-                return Value.null_value;
-            };
+            const parsed =
+                std.json.parseFromSlice(std.json.Value, arena.allocator(), first_text, .{}) catch {
+                    buf.deinit(allocator);
+                    return Value.null_value;
+                };
             const arr = switch (parsed.value) {
                 .array => |a| a,
                 else => {
@@ -5229,7 +5624,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                 return Value.null_value;
             } // odd length = error
 
-            try buf.append(allocator, '{');
+            try buf.append(allocator, '\x7b');
             var i: usize = 0;
             while (i < arr.items.len) : (i += 2) {
                 if (i > 0) try buf.appendSlice(allocator, ",");
@@ -5272,14 +5667,16 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                 },
             };
 
-            const pk = std.json.parseFromSlice(std.json.Value, arena.allocator(), first_text, .{}) catch {
-                buf.deinit(allocator);
-                return Value.null_value;
-            };
-            const pv = std.json.parseFromSlice(std.json.Value, arena.allocator(), second_text, .{}) catch {
-                buf.deinit(allocator);
-                return Value.null_value;
-            };
+            const pk =
+                std.json.parseFromSlice(std.json.Value, arena.allocator(), first_text, .{}) catch {
+                    buf.deinit(allocator);
+                    return Value.null_value;
+                };
+            const pv =
+                std.json.parseFromSlice(std.json.Value, arena.allocator(), second_text, .{}) catch {
+                    buf.deinit(allocator);
+                    return Value.null_value;
+                };
             const keys = switch (pk.value) {
                 .array => |a| a,
                 else => {
@@ -5299,7 +5696,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                 return Value.null_value;
             }
 
-            try buf.append(allocator, '{');
+            try buf.append(allocator, '\x7b');
             for (keys.items, vals.items, 0..) |k, v, idx| {
                 if (idx > 0) try buf.appendSlice(allocator, ",");
                 const key_str = switch (k) {
@@ -5326,11 +5723,11 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                 try buf.append(allocator, '"');
             }
         }
-        try buf.append(allocator, '}');
+        try buf.append(allocator, '\x7d');
         return Value{ .text = try buf.toOwnedSlice(allocator) };
     }
 
-    // ── String functions ────────────────────────────────────────────────────
+    // ── String functions ───────────────────────
 
     // substring(str, from) / substring(str, from, len) — 1-based position
     if (std.ascii.eqlIgnoreCase(fc.name, "substring") or
@@ -5398,7 +5795,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             };
             return Value{ .text = try allocator.dupe(u8, std.mem.trimLeft(u8, s, chars)) };
         }
-        return Value{ .text = try allocator.dupe(u8, std.mem.trimLeft(u8, s, &std.ascii.whitespace)) };
+        return Value{ .text = try allocator.dupe(
+            u8,
+            std.mem.trimLeft(u8, s, &std.ascii.whitespace),
+        ) };
     }
 
     // rtrim(str) / rtrim(str, chars) — remove trailing chars
@@ -5420,7 +5820,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             };
             return Value{ .text = try allocator.dupe(u8, std.mem.trimRight(u8, s, chars)) };
         }
-        return Value{ .text = try allocator.dupe(u8, std.mem.trimRight(u8, s, &std.ascii.whitespace)) };
+        return Value{ .text = try allocator.dupe(
+            u8,
+            std.mem.trimRight(u8, s, &std.ascii.whitespace),
+        ) };
     }
 
     // replace(str, from, to) — replace all occurrences
@@ -5493,7 +5896,12 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         var buf = try allocator.alloc(u8, total_len);
         errdefer allocator.free(buf);
         // Evaluate fill before writing — keep fill_val alive until buf is filled
-        const fill_val: Value = if (fc.args.len >= 3) try evalExpr(allocator, fc.args[2], row, catalog) else .null_value;
+        const fill_val: Value = if (fc.args.len >= 3) try evalExpr(
+            allocator,
+            fc.args[2],
+            row,
+            catalog,
+        ) else .null_value;
         defer fill_val.free(allocator);
         const fill: []const u8 = switch (fill_val) {
             .text => |t| if (t.len > 0) t else " ",
@@ -5529,7 +5937,12 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         errdefer allocator.free(buf);
         @memcpy(buf[0..s.len], s);
         // Evaluate fill before writing — keep fill_val alive until buf is filled
-        const fill_val: Value = if (fc.args.len >= 3) try evalExpr(allocator, fc.args[2], row, catalog) else .null_value;
+        const fill_val: Value = if (fc.args.len >= 3) try evalExpr(
+            allocator,
+            fc.args[2],
+            row,
+            catalog,
+        ) else .null_value;
         defer fill_val.free(allocator);
         const fill: []const u8 = switch (fill_val) {
             .text => |t| if (t.len > 0) t else " ",
@@ -5583,7 +5996,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const field_val = try evalExpr(allocator, fc.args[2], row, catalog);
         defer field_val.free(allocator);
         const field: usize = switch (field_val) {
-            .integer => |v| if (v <= 0) return Value{ .text = try allocator.dupe(u8, "") } else @intCast(v),
+            .integer => |v| if (v <= 0) return Value{ .text = try allocator.dupe(
+                u8,
+                "",
+            ) } else @intCast(v),
             else => return Value.null_value,
         };
         if (delim.len == 0) return Value{ .text = try allocator.dupe(u8, s) };
@@ -5702,7 +6118,7 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         return Value{ .text = buf };
     }
 
-    // ── Math functions ──────────────────────────────────────────────────────
+    // ── Math functions ───────────────────────
 
     // round(num) / round(num, scale)
     if (std.ascii.eqlIgnoreCase(fc.name, "round")) {
@@ -5854,7 +6270,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const ts_micros: i64 = switch (source_expr) {
             .date => |days| @as(i64, days) * MICROS_PER_DAY,
             .timestamp => |ts| ts,
-            .text => |s| parseTimestampString(s) orelse (parseDateString(s) orelse return .null_value) * MICROS_PER_DAY,
+            .text => |s| parseTimestampString(s) orelse
+                (parseDateString(s) orelse return .null_value) * MICROS_PER_DAY,
             .null_value => return .null_value,
             else => return .null_value,
         };
@@ -5935,7 +6352,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const ts_micros: i64 = switch (source_expr) {
             .date => |days| @as(i64, days) * MICROS_PER_DAY,
             .timestamp => |ts| ts,
-            .text => |s| parseTimestampString(s) orelse (parseDateString(s) orelse return .null_value) * MICROS_PER_DAY,
+            .text => |s| parseTimestampString(s) orelse
+                (parseDateString(s) orelse return .null_value) * MICROS_PER_DAY,
             .null_value => return .null_value,
             else => return .null_value,
         };
@@ -5950,8 +6368,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         var truncated_month = date.month;
         var truncated_day = date.day;
         var truncated_hour: i64 = @divFloor(time_micros, MICROS_PER_HOUR);
-        var truncated_minute: i64 = @divFloor(@mod(time_micros, MICROS_PER_HOUR), MICROS_PER_MINUTE);
-        var truncated_second: i64 = @divFloor(@mod(time_micros, MICROS_PER_MINUTE), MICROS_PER_SECOND);
+        var truncated_minute: i64 =
+            @divFloor(@mod(time_micros, MICROS_PER_HOUR), MICROS_PER_MINUTE);
+        var truncated_second: i64 =
+            @divFloor(@mod(time_micros, MICROS_PER_MINUTE), MICROS_PER_SECOND);
 
         if (std.ascii.eqlIgnoreCase(field_str, "year")) {
             truncated_month = 1;
@@ -6004,7 +6424,9 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             truncated_second = 0;
         } else if (std.ascii.eqlIgnoreCase(field_str, "second")) {
             // Already set
-        } else if (std.ascii.eqlIgnoreCase(field_str, "millisecond") or std.ascii.eqlIgnoreCase(field_str, "milliseconds")) {
+        } else if (std.ascii.eqlIgnoreCase(field_str, "millisecond") or
+            std.ascii.eqlIgnoreCase(field_str, "milliseconds"))
+        {
             // Already set (microsecond precision truncated)
         } else {
             return .null_value;
@@ -6028,7 +6450,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         defer month_v.free(allocator);
         const day_v = try evalExpr(allocator, fc.args[2], row, catalog);
         defer day_v.free(allocator);
-        if (year_v == .null_value or month_v == .null_value or day_v == .null_value) return .null_value;
+        if (year_v == .null_value or month_v == .null_value or
+            day_v == .null_value) return .null_value;
         const year: i32 = switch (year_v) {
             .integer => |v| @intCast(v),
             else => return .null_value,
@@ -6062,7 +6485,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         defer min_v.free(allocator);
         const sec_v = try evalExpr(allocator, fc.args[2], row, catalog);
         defer sec_v.free(allocator);
-        if (hour_v == .null_value or min_v == .null_value or sec_v == .null_value) return .null_value;
+        if (hour_v == .null_value or min_v == .null_value or
+            sec_v == .null_value) return .null_value;
         const hour: i64 = switch (hour_v) {
             .integer => |v| blk: {
                 if (v < 0 or v > 23) return .null_value;
@@ -6085,8 +6509,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         };
         if (sec_f < 0 or sec_f >= 60) return .null_value;
         const sec_whole: i64 = @intFromFloat(sec_f);
-        const micros_frac: i64 = @intFromFloat((sec_f - @as(f64, @floatFromInt(sec_whole))) * 1_000_000);
-        const time_micros = hour * MICROS_PER_HOUR + min * MICROS_PER_MINUTE + sec_whole * MICROS_PER_SECOND + micros_frac;
+        const micros_frac: i64 =
+            @intFromFloat((sec_f - @as(f64, @floatFromInt(sec_whole))) * 1_000_000);
+        const time_micros = hour * MICROS_PER_HOUR + min * MICROS_PER_MINUTE +
+            sec_whole * MICROS_PER_SECOND + micros_frac;
         const formatted = formatTime(allocator, time_micros) catch return .null_value;
         return .{ .text = formatted };
     }
@@ -6107,7 +6533,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const sec_v = try evalExpr(allocator, fc.args[5], row, catalog);
         defer sec_v.free(allocator);
         if (year_v == .null_value or month_v == .null_value or day_v == .null_value or
-            hour_v == .null_value or min_v == .null_value or sec_v == .null_value) return .null_value;
+            hour_v == .null_value or min_v == .null_value or
+            sec_v == .null_value) return .null_value;
         const year: i32 = switch (year_v) {
             .integer => |v| @intCast(v),
             else => return .null_value,
@@ -6147,9 +6574,11 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         };
         if (sec_f < 0 or sec_f >= 60) return .null_value;
         const sec_whole: i64 = @intFromFloat(sec_f);
-        const micros_frac: i64 = @intFromFloat((sec_f - @as(f64, @floatFromInt(sec_whole))) * 1_000_000);
+        const micros_frac: i64 =
+            @intFromFloat((sec_f - @as(f64, @floatFromInt(sec_whole))) * 1_000_000);
         const days = dateToDays(year, month, day);
-        const time_micros = hour * MICROS_PER_HOUR + min * MICROS_PER_MINUTE + sec_whole * MICROS_PER_SECOND + micros_frac;
+        const time_micros = hour * MICROS_PER_HOUR + min * MICROS_PER_MINUTE +
+            sec_whole * MICROS_PER_SECOND + micros_frac;
         const ts_micros = @as(i64, days) * MICROS_PER_DAY + time_micros;
         const formatted = formatTimestamp(allocator, ts_micros) catch return .null_value;
         return .{ .text = formatted };
@@ -6248,7 +6677,9 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
     }
 
     // char_length(str) / character_length(str) — return character count
-    if (std.ascii.eqlIgnoreCase(fc.name, "char_length") or std.ascii.eqlIgnoreCase(fc.name, "character_length")) {
+    if (std.ascii.eqlIgnoreCase(fc.name, "char_length") or
+        std.ascii.eqlIgnoreCase(fc.name, "character_length"))
+    {
         if (fc.args.len != 1) return EvalError.TypeError;
         const arg = try evalExpr(allocator, fc.args[0], row, catalog);
         defer arg.free(allocator);
@@ -6334,7 +6765,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         h.final(&digest);
         const hex = try allocator.alloc(u8, digest.len * 2);
         for (digest, 0..) |b, i| {
-            _ = std.fmt.bufPrint(hex[i * 2 .. i * 2 + 2], "{x:0>2}", .{b}) catch unreachable; // SAFETY: buffer is exactly 2 bytes
+            // SAFETY: buffer is exactly 2 bytes
+            _ = std.fmt.bufPrint(hex[i * 2 .. i * 2 + 2], "{x:0>2}", .{b}) catch unreachable;
         }
         return Value{ .text = hex };
     }
@@ -6359,7 +6791,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         if (std.ascii.eqlIgnoreCase(fmt, "hex")) {
             const out = try allocator.alloc(u8, data.len * 2);
             for (data, 0..) |b, i| {
-                _ = std.fmt.bufPrint(out[i * 2 .. i * 2 + 2], "{x:0>2}", .{b}) catch unreachable; // SAFETY: 2-byte buffer
+                // SAFETY: 2-byte buffer
+                _ = std.fmt.bufPrint(out[i * 2 .. i * 2 + 2], "{x:0>2}", .{b}) catch unreachable;
             }
             return Value{ .text = out };
         } else if (std.ascii.eqlIgnoreCase(fmt, "base64")) {
@@ -6377,7 +6810,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
                     try buf.append(allocator, b);
                 } else {
                     var tmp: [5]u8 = undefined;
-                    const written = std.fmt.bufPrint(&tmp, "\\{o:0>3}", .{b}) catch unreachable; // SAFETY: octal fits in 4 bytes + backslash
+                    // SAFETY: octal fits in 4 bytes + backslash
+                    const written = std.fmt.bufPrint(&tmp, "\\{o:0>3}", .{b}) catch unreachable;
                     try buf.appendSlice(allocator, written);
                 }
             }
@@ -6414,7 +6848,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             }
             return Value{ .text = out };
         } else if (std.ascii.eqlIgnoreCase(fmt, "base64")) {
-            const out_len = std.base64.standard.Decoder.calcSizeForSlice(data) catch return .null_value;
+            const out_len =
+                std.base64.standard.Decoder.calcSizeForSlice(data) catch return .null_value;
             const out = try allocator.alloc(u8, out_len);
             std.base64.standard.Decoder.decode(out, data) catch {
                 allocator.free(out);
@@ -6662,7 +7097,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         } else @intCast(placing.len);
         // 0-based start index; clamp to [0, s.len]
         const start: usize = @intCast(@min(@as(i64, @intCast(s.len)), @max(0, from_pos - 1)));
-        const del: usize = @intCast(@min(@as(i64, @intCast(s.len)) - @as(i64, @intCast(start)), @max(0, for_len)));
+        const del: usize =
+            @intCast(@min(@as(i64, @intCast(s.len)) - @as(i64, @intCast(start)), @max(0, for_len)));
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, s[0..start]);
@@ -7025,7 +7461,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         const delim_val = try evalExpr(allocator, fc.args[1], row, catalog);
         defer delim_val.free(allocator);
         // NULL delimiter or empty string delimiter → split into chars
-        const char_split = delim_val == .null_value or (delim_val == .text and delim_val.text.len == 0);
+        const char_split =
+            delim_val == .null_value or (delim_val == .text and delim_val.text.len == 0);
 
         const null_str: ?[]const u8 = if (fc.args.len == 3) blk: {
             const nsv = try evalExpr(allocator, fc.args[2], row, catalog);
@@ -7054,7 +7491,14 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             var i: usize = 0;
             while (i < text.len) {
                 const byte = text[i];
-                const char_len: usize = if (byte < 0x80) 1 else if (byte & 0xE0 == 0xC0) 2 else if (byte & 0xF0 == 0xE0) 3 else 4;
+                const char_len: usize = if (byte < 0x80)
+                    1
+                else if (byte & 0xE0 == 0xC0)
+                    2
+                else if (byte & 0xF0 == 0xE0)
+                    3
+                else
+                    4;
                 const end = @min(i + char_len, text.len);
                 const ch = text[i..end];
                 if (null_str != null and std.mem.eql(u8, ch, null_str.?)) {
@@ -7512,7 +7956,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
         if (op < lo) return Value{ .integer = 0 };
         if (op >= hi) return Value{ .integer = cnt + 1 };
 
-        const bucket = @as(i64, @intFromFloat(@floor((op - lo) / (hi - lo) * @as(f64, @floatFromInt(cnt))))) + 1;
+        const bucket = @as(
+            i64,
+            @intFromFloat(@floor((op - lo) / (hi - lo) * @as(f64, @floatFromInt(cnt)))),
+        ) + 1;
         return Value{ .integer = bucket };
     }
 
@@ -7592,7 +8039,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 
         if (rx.n_groups == 0) {
             // No capture groups: return array with whole match
-            const whole = allocator.dupe(u8, str[match.start..match.end]) catch return EvalError.OutOfMemory;
+            const whole =
+                allocator.dupe(u8, str[match.start..match.end]) catch return EvalError.OutOfMemory;
             const elems = allocator.alloc(Value, 1) catch {
                 allocator.free(whole);
                 return EvalError.OutOfMemory;
@@ -7606,7 +8054,10 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             var i: u32 = 0;
             while (i < rx.n_groups) : (i += 1) {
                 if (match.groupText(i + 1, str)) |gt| {
-                    elems[i] = Value{ .text = allocator.dupe(u8, gt) catch return EvalError.OutOfMemory };
+                    elems[i] = Value{ .text = allocator.dupe(
+                        u8,
+                        gt,
+                    ) catch return EvalError.OutOfMemory };
                 } else {
                     elems[i] = .null_value;
                 }
@@ -7894,7 +8345,12 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
             .text => |t| t,
             else => return EvalError.TypeError,
         };
-        const result = evalSqlJsonValue(allocator, json_val, path_str, false) catch return Value{ .boolean = false };
+        const result = evalSqlJsonValue(
+            allocator,
+            json_val,
+            path_str,
+            false,
+        ) catch return Value{ .boolean = false };
         defer result.free(allocator);
         return Value{ .boolean = result != .null_value };
     }
@@ -7910,7 +8366,8 @@ fn evalFunctionCall(allocator: Allocator, fc: anytype, row: *const Row, catalog:
 fn evalIsJsonType(text: []const u8, json_type: ast.JsonTypeCheck) bool {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), text, .{}) catch return false;
+    const parsed =
+        std.json.parseFromSlice(std.json.Value, arena.allocator(), text, .{}) catch return false;
     return switch (json_type) {
         .value => true,
         .object => parsed.value == .object,
@@ -7922,7 +8379,12 @@ fn evalIsJsonType(text: []const u8, json_type: ast.JsonTypeCheck) bool {
     };
 }
 
-fn evalSqlJsonValue(allocator: Allocator, json_val: Value, path_str: []const u8, as_json: bool) EvalError!Value {
+fn evalSqlJsonValue(
+    allocator: Allocator,
+    json_val: Value,
+    path_str: []const u8,
+    as_json: bool,
+) EvalError!Value {
     // Get JSON text from Value
     const json_text = switch (json_val) {
         .text => |t| t,
@@ -7935,7 +8397,12 @@ fn evalSqlJsonValue(allocator: Allocator, json_val: Value, path_str: []const u8,
     defer arena.deinit();
     const aa = arena.allocator();
 
-    const parsed = std.json.parseFromSlice(std.json.Value, aa, json_text, .{}) catch return EvalError.TypeError;
+    const parsed = std.json.parseFromSlice(
+        std.json.Value,
+        aa,
+        json_text,
+        .{},
+    ) catch return EvalError.TypeError;
 
     // Navigate the SQL/JSON path
     const current = sqlJsonNavigate(parsed.value, path_str) orelse return Value.null_value;
@@ -7944,13 +8411,7 @@ fn evalSqlJsonValue(allocator: Allocator, json_val: Value, path_str: []const u8,
     if (as_json) {
         // JSON_QUERY: return JSON text representation
         switch (current) {
-            .object, .array => {
-                var buf = std.ArrayListUnmanaged(u8){};
-                defer buf.deinit(allocator);
-                std.fmt.format(buf.writer(allocator), "{f}", .{std.json.fmt(current, .{})}) catch return EvalError.OutOfMemory;
-                const json_result = allocator.dupe(u8, buf.items) catch return EvalError.OutOfMemory;
-                return Value{ .text = json_result };
-            },
+            .object, .array => return Value{ .text = try jsonToOwned(allocator, current) },
             // JSON_QUERY requires an array or object; scalar paths return NULL
             else => return Value.null_value,
         }
@@ -7958,10 +8419,10 @@ fn evalSqlJsonValue(allocator: Allocator, json_val: Value, path_str: []const u8,
         // JSON_VALUE: return scalar as text (SQL:2016 default RETURNING type is text/nvarchar).
         // Numeric types are formatted as text; booleans as "true"/"false".
         return switch (current) {
-            .string => |s| Value{ .text = allocator.dupe(u8, s) catch return EvalError.OutOfMemory },
-            .integer => |v| Value{ .text = std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory },
-            .float => |v| Value{ .text = std.fmt.allocPrint(allocator, "{d}", .{v}) catch return EvalError.OutOfMemory },
-            .bool => |b| Value{ .text = allocator.dupe(u8, if (b) "true" else "false") catch return EvalError.OutOfMemory },
+            .string => |s| Value{ .text = try dupeOom(allocator, s) },
+            .integer => |v| Value{ .text = try printAlloc(allocator, "{d}", .{v}) },
+            .float => |v| Value{ .text = try printAlloc(allocator, "{d}", .{v}) },
+            .bool => |b| Value{ .text = try dupeOom(allocator, if (b) "true" else "false") },
             .null => Value.null_value,
             // JSON_VALUE on an object/array returns NULL (use JSON_QUERY for those)
             else => Value.null_value,
@@ -8016,7 +8477,44 @@ fn sqlJsonNavigate(root: std.json.Value, path: []const u8) ?std.json.Value {
 
 /// Check if a function name is an aggregate function.
 fn isAggregateFuncName(name: []const u8) bool {
-    const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "json_agg", "json_arrayagg", "array_agg", "string_agg", "json_object_agg", "json_objectagg", "jsonb_object_agg", "bool_and", "bool_or", "bit_and", "bit_or", "var_pop", "var_samp", "variance", "stddev_pop", "stddev_samp", "stddev", "every", "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_count", "regr_avgx", "regr_avgy", "regr_sxx", "regr_syy", "regr_sxy", "grouping" };
+    const agg_names = [_][]const u8{
+        "count",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "json_agg",
+        "json_arrayagg",
+        "array_agg",
+        "string_agg",
+        "json_object_agg",
+        "json_objectagg",
+        "jsonb_object_agg",
+        "bool_and",
+        "bool_or",
+        "bit_and",
+        "bit_or",
+        "var_pop",
+        "var_samp",
+        "variance",
+        "stddev_pop",
+        "stddev_samp",
+        "stddev",
+        "every",
+        "corr",
+        "covar_pop",
+        "covar_samp",
+        "regr_slope",
+        "regr_intercept",
+        "regr_r2",
+        "regr_count",
+        "regr_avgx",
+        "regr_avgy",
+        "regr_sxx",
+        "regr_syy",
+        "regr_sxy",
+        "grouping",
+    };
     for (agg_names) |n| {
         if (std.ascii.eqlIgnoreCase(name, n)) return true;
     }
@@ -8191,7 +8689,7 @@ fn sampleAccept(state: *u64, percent: f64) bool {
     return val < threshold;
 }
 
-// ── Executor Interface ──────────────────────────────────────────────────
+// ── Executor Interface ───────────────────────
 
 /// Error type for executor operations.
 pub const ExecError = error{
@@ -8228,7 +8726,7 @@ pub const RowIterator = struct {
     }
 };
 
-// ── Runtime Statistics (for EXPLAIN ANALYZE) ─────────────────────────────
+// ── Runtime Statistics (for EXPLAIN ANALYZE) ────────────────
 
 /// Runtime statistics for a single operator.
 pub const OperatorStats = struct {
@@ -8313,7 +8811,7 @@ pub const InstrumentedIterator = struct {
     }
 };
 
-// ── Scan Operator ───────────────────────────────────────────────────────
+// ── Scan Operator ─────────────────────────
 
 /// Full table scan via B+Tree cursor.
 pub const ScanOp = struct {
@@ -8339,7 +8837,12 @@ pub const ScanOp = struct {
 
     /// Create a ScanOp. After placement on the heap, call initCursor() to
     /// set up the cursor with a stable pointer to the tree.
-    pub fn init(allocator: Allocator, pool: *BufferPool, data_root_page_id: u32, col_names: []const []const u8) ScanOp {
+    pub fn init(
+        allocator: Allocator,
+        pool: *BufferPool,
+        data_root_page_id: u32,
+        col_names: []const []const u8,
+    ) ScanOp {
         return .{
             .allocator = allocator,
             .tree = BTree.init(pool, data_root_page_id),
@@ -8397,8 +8900,15 @@ pub const ScanOp = struct {
             // MVCC visibility check: deserialize header and filter invisible tuples
             if (self.mvcc_ctx) |ctx| {
                 if (ctx.enabled and mvcc_mod.isVersionedRow(entry.?.value)) {
-                    const header = TupleHeader.deserialize(entry.?.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                    if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    const header =
+                        TupleHeader.deserialize(entry.?.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    if (!mvcc_mod.isTupleVisibleWithTm(
+                        header,
+                        ctx.snapshot,
+                        ctx.current_xid,
+                        ctx.current_cid,
+                        ctx.tm,
+                    )) {
                         // Tuple not visible — skip it
                         self.allocator.free(entry.?.value);
                         continue;
@@ -8414,7 +8924,10 @@ pub const ScanOp = struct {
                         continue; // SKIP LOCKED
                     }
                     // Visible: deserialize column data (skip MVCC header)
-                    const values = deserializeRow(self.allocator, entry.?.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
+                    const values = deserializeRow(
+                        self.allocator,
+                        entry.?.value[mvcc_mod.MVCC_ROW_OVERHEAD..],
+                    ) catch {
                         self.allocator.free(entry.?.value);
                         return ExecError.InvalidRowData;
                     };
@@ -8426,7 +8939,10 @@ pub const ScanOp = struct {
 
                     // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
                     const padded_values = if (values.len < self.col_names.len) blk: {
-                        const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                        const extended = self.allocator.alloc(
+                            Value,
+                            self.col_names.len,
+                        ) catch return ExecError.OutOfMemory;
                         for (values, 0..) |v, i| extended[i] = v;
                         for (values.len..self.col_names.len) |i| {
                             extended[i] = if (self.col_defaults) |defs|
@@ -8438,9 +8954,16 @@ pub const ScanOp = struct {
                         break :blk extended;
                     } else values;
 
-                    const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+                    const cols = self.allocator.alloc(
+                        []const u8,
+                        self.col_names.len,
+                    ) catch return ExecError.OutOfMemory;
                     for (self.col_names, 0..) |c, i| cols[i] = c;
-                    return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
+                    return Row{
+                        .columns = cols,
+                        .values = padded_values,
+                        .allocator = self.allocator,
+                    };
                 }
             }
 
@@ -8457,7 +8980,8 @@ pub const ScanOp = struct {
                 entry.?.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
             else
                 entry.?.value;
-            const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
+            const values =
+                deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
             errdefer {
                 for (values) |v| v.free(self.allocator);
                 self.allocator.free(values);
@@ -8465,7 +8989,10 @@ pub const ScanOp = struct {
 
             // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
             const padded_values = if (values.len < self.col_names.len) blk: {
-                const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                const extended = self.allocator.alloc(
+                    Value,
+                    self.col_names.len,
+                ) catch return ExecError.OutOfMemory;
                 for (values, 0..) |v, i| extended[i] = v;
                 for (values.len..self.col_names.len) |i| {
                     extended[i] = if (self.col_defaults) |defs|
@@ -8478,7 +9005,10 @@ pub const ScanOp = struct {
             } else values;
 
             // Build column names
-            const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+            const cols = self.allocator.alloc(
+                []const u8,
+                self.col_names.len,
+            ) catch return ExecError.OutOfMemory;
             for (self.col_names, 0..) |c, i| cols[i] = c;
 
             return Row{
@@ -8504,7 +9034,7 @@ pub const ScanOp = struct {
     }
 };
 
-// ── Index Scan Operator ─────────────────────────────────────────────────
+// ── Index Scan Operator ───────────────────────
 
 /// Build a composite B+Tree key for a non-unique secondary index that allows
 /// duplicate indexed-column values: `4-byte BE length of idx_key ++ idx_key ++ row_key`.
@@ -8512,7 +9042,11 @@ pub const ScanOp = struct {
 /// to disambiguate variable-length TEXT-encoded idx_keys — without it, value "ab" with
 /// one row_key can byte-collide with value "a" with a different row_key that happens to
 /// start with 'b'. Caller owns the returned slice.
-pub fn buildCompositeIndexKey(allocator: Allocator, idx_key: []const u8, row_key: []const u8) ![]u8 {
+pub fn buildCompositeIndexKey(
+    allocator: Allocator,
+    idx_key: []const u8,
+    row_key: []const u8,
+) ![]u8 {
     const buf = try allocator.alloc(u8, 4 + idx_key.len + row_key.len);
     std.mem.writeInt(u32, buf[0..4], @intCast(idx_key.len), .big);
     @memcpy(buf[4 .. 4 + idx_key.len], idx_key);
@@ -8534,7 +9068,12 @@ pub fn compositeIndexKeyPrefix(allocator: Allocator, idx_key: []const u8) ![]u8 
 /// and stops at the first entry whose key no longer starts with that prefix. Returns an
 /// empty (but non-null) slice when there are no matches. Caller owns the returned slice and
 /// each element.
-pub fn collectRowKeysForEquality(allocator: Allocator, pool: *BufferPool, index_root_page_id: u32, idx_key: []const u8) ![][]u8 {
+pub fn collectRowKeysForEquality(
+    allocator: Allocator,
+    pool: *BufferPool,
+    index_root_page_id: u32,
+    idx_key: []const u8,
+) ![][]u8 {
     const prefix = try compositeIndexKeyPrefix(allocator, idx_key);
     defer allocator.free(prefix);
 
@@ -8590,7 +9129,8 @@ pub const IndexScanOp = struct {
     /// onto `col_names` (the requested output columns, a subset/reordering of this).
     covering_columns: []const []const u8 = &.{},
     /// Typed key value for covering scan (optional). When set, used in buildCoveringRow
-    /// instead of the raw lookup_key reinterpreted as text. If null, falls back to raw-bytes-as-text.
+    /// instead of the raw lookup_key reinterpreted as text. If null, falls back to
+    /// raw-bytes-as-text.
     covering_key_value: ?Value = null,
     /// When true, the index is a non-unique `.btree` index whose B+Tree keys are
     /// `idx_key ++ row_key` composites (see `buildCompositeIndexKey`) rather than a
@@ -8634,8 +9174,13 @@ pub const IndexScanOp = struct {
     /// maps 1:1, in order, onto `decoded_values`. Values not present in `covering_columns` fall
     /// back to `col_defaults`/null, matching the missing-column padding convention used elsewhere
     /// in this file.
-    fn buildCoveringRow(self: *IndexScanOp, key_value: Value, decoded_values: []const Value) ExecError!Row {
-        const out_values = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+    fn buildCoveringRow(
+        self: *IndexScanOp,
+        key_value: Value,
+        decoded_values: []const Value,
+    ) ExecError!Row {
+        const out_values =
+            self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
         var out_i: usize = 0;
         errdefer {
             for (out_values[0..out_i]) |v| v.free(self.allocator);
@@ -8643,7 +9188,9 @@ pub const IndexScanOp = struct {
         }
         for (self.col_names) |want_col| {
             var matched: ?Value = null;
-            if (self.covering_columns.len > 0 and std.mem.eql(u8, want_col, self.covering_columns[0])) {
+            if (self.covering_columns.len > 0 and
+                std.mem.eql(u8, want_col, self.covering_columns[0]))
+            {
                 matched = key_value;
             } else if (self.covering_columns.len > 0) {
                 for (self.covering_columns[1..], 0..) |cov_col, j| {
@@ -8662,7 +9209,8 @@ pub const IndexScanOp = struct {
             out_i += 1;
         }
 
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        const cols =
+            self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
         for (self.col_names, 0..) |c, i| cols[i] = c;
 
         return Row{ .columns = cols, .values = out_values, .allocator = self.allocator };
@@ -8675,19 +9223,30 @@ pub const IndexScanOp = struct {
     /// "the scan is exhausted" — see `next()`.
     fn fetchRowFromDataTree(self: *IndexScanOp, data_row_key: []const u8) ExecError!?Row {
         var data_tree = BTree.init(self.pool, self.data_root_page_id);
-        const row_data = data_tree.get(self.allocator, data_row_key) catch return ExecError.StorageError;
+        const row_data =
+            data_tree.get(self.allocator, data_row_key) catch return ExecError.StorageError;
         if (row_data == null) return null; // Orphaned index entry
         defer self.allocator.free(row_data.?);
 
         // MVCC visibility check
         if (self.mvcc_ctx) |ctx| {
             if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
-                const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                const header =
+                    TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                if (!mvcc_mod.isTupleVisibleWithTm(
+                    header,
+                    ctx.snapshot,
+                    ctx.current_xid,
+                    ctx.current_cid,
+                    ctx.tm,
+                )) {
                     return null; // Tuple not visible
                 }
                 // Visible: deserialize column data (skip MVCC header)
-                const values = deserializeRow(self.allocator, row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch return ExecError.InvalidRowData;
+                const values = deserializeRow(
+                    self.allocator,
+                    row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..],
+                ) catch return ExecError.InvalidRowData;
                 errdefer {
                     for (values) |v| v.free(self.allocator);
                     self.allocator.free(values);
@@ -8701,7 +9260,8 @@ pub const IndexScanOp = struct {
             row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]
         else
             row_data.?;
-        const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
+        const values =
+            deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
         errdefer {
             for (values) |v| v.free(self.allocator);
             self.allocator.free(values);
@@ -8713,7 +9273,8 @@ pub const IndexScanOp = struct {
     /// ADD COLUMN`) with `col_defaults`/null and wrap into a `Row`. Takes ownership of `values`.
     fn padRow(self: *IndexScanOp, values: []Value) ExecError!Row {
         const padded_values = if (values.len < self.col_names.len) blk: {
-            const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+            const extended =
+                self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
             for (values, 0..) |v, i| extended[i] = v;
             for (values.len..self.col_names.len) |i| {
                 extended[i] = if (self.col_defaults) |defs|
@@ -8725,7 +9286,8 @@ pub const IndexScanOp = struct {
             break :blk extended;
         } else values;
 
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        const cols =
+            self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
         for (self.col_names, 0..) |c, i| cols[i] = c;
 
         return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
@@ -8736,7 +9298,12 @@ pub const IndexScanOp = struct {
         // a lazily-populated queue of candidate row_keys instead of a single point lookup.
         if (self.composite_key) {
             if (self.row_key_queue == null) {
-                self.row_key_queue = collectRowKeysForEquality(self.allocator, self.pool, self.index_root_page_id, self.lookup_key) catch return ExecError.StorageError;
+                self.row_key_queue = collectRowKeysForEquality(
+                    self.allocator,
+                    self.pool,
+                    self.index_root_page_id,
+                    self.lookup_key,
+                ) catch return ExecError.StorageError;
             }
             const queue = self.row_key_queue.?;
             while (self.queue_cursor < queue.len) {
@@ -8759,17 +9326,27 @@ pub const IndexScanOp = struct {
         const row_key = switch (self.index_type) {
             .btree => blk: {
                 var idx_tree = BTree.init(self.pool, self.index_root_page_id);
-                break :blk idx_tree.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
+                break :blk idx_tree.get(
+                    self.allocator,
+                    self.lookup_key,
+                ) catch return ExecError.StorageError;
             },
             .hash => blk: {
                 var idx_hash = HashIndex.init(self.pool, self.index_root_page_id);
-                break :blk idx_hash.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
+                break :blk idx_hash.get(
+                    self.allocator,
+                    self.lookup_key,
+                ) catch return ExecError.StorageError;
             },
             .gist, .gin => blk: {
                 // GiST/GIN pages use B+Tree layout (initialized as B+Tree at CREATE INDEX time),
-                // so we fall back to B+Tree point lookup until native GiST/GIN lookup is integrated.
+                // so we fall back to B+Tree point lookup until native GiST/GIN lookup is
+                // integrated.
                 var idx_tree = BTree.init(self.pool, self.index_root_page_id);
-                break :blk idx_tree.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
+                break :blk idx_tree.get(
+                    self.allocator,
+                    self.lookup_key,
+                ) catch return ExecError.StorageError;
             },
         };
         if (row_key == null) return null; // No matching index entry
@@ -8790,16 +9367,28 @@ pub const IndexScanOp = struct {
         const data_row_key: []const u8 = blk: {
             if (!self.covering) break :blk row_key.?;
 
-            const d = index_entry_mod.decodeIndexEntry(self.allocator, row_key.?) catch return ExecError.InvalidRowData;
+            const d = index_entry_mod.decodeIndexEntry(
+                self.allocator,
+                row_key.?,
+            ) catch return ExecError.InvalidRowData;
             decoded = d;
 
             if (self.covering_columns.len > 0) {
                 if (self.mvcc_ctx) |ctx| {
-                    if (ctx.enabled and !mvcc_mod.isTupleVisibleWithTm(d.header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    if (ctx.enabled and
+                        !mvcc_mod.isTupleVisibleWithTm(
+                            d.header,
+                            ctx.snapshot,
+                            ctx.current_xid,
+                            ctx.current_cid,
+                            ctx.tm,
+                        ))
+                    {
                         return null; // Tuple not visible
                     }
                 }
-                // Use covering_key_value if provided (typed key from WHERE clause), fall back to raw text
+                // Use covering_key_value if provided (typed key from WHERE clause), fall back to
+                // raw text
                 const key_val = self.covering_key_value orelse Value{ .text = self.lookup_key };
                 return try self.buildCoveringRow(key_val, d.values);
             }
@@ -8857,15 +9446,30 @@ pub const BitmapIndexScanOp = struct {
     /// returned RowKeySet.
     pub fn scan(self: *BitmapIndexScanOp) ExecError!bitmap_mod.RowKeySet {
         if (self.composite_key) {
-            const row_keys = collectRowKeysForEquality(self.allocator, self.pool, self.index_root_page_id, self.lookup_key) catch return ExecError.StorageError;
-            return bitmap_mod.RowKeySet.fromOwnedUnsorted(self.allocator, row_keys) catch return ExecError.OutOfMemory;
+            const row_keys = collectRowKeysForEquality(
+                self.allocator,
+                self.pool,
+                self.index_root_page_id,
+                self.lookup_key,
+            ) catch return ExecError.StorageError;
+            return bitmap_mod.RowKeySet.fromOwnedUnsorted(
+                self.allocator,
+                row_keys,
+            ) catch return ExecError.OutOfMemory;
         }
 
         var idx_tree = BTree.init(self.pool, self.index_root_page_id);
-        const row_key = idx_tree.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
-        const items = self.allocator.alloc([]u8, if (row_key != null) 1 else 0) catch return ExecError.OutOfMemory;
+        const row_key =
+            idx_tree.get(self.allocator, self.lookup_key) catch return ExecError.StorageError;
+        const items = self.allocator.alloc(
+            []u8,
+            if (row_key != null) 1 else 0,
+        ) catch return ExecError.OutOfMemory;
         if (row_key) |rk| items[0] = rk;
-        return bitmap_mod.RowKeySet.fromOwnedUnsorted(self.allocator, items) catch return ExecError.OutOfMemory;
+        return bitmap_mod.RowKeySet.fromOwnedUnsorted(
+            self.allocator,
+            items,
+        ) catch return ExecError.OutOfMemory;
     }
 
     pub fn asBitmapPlan(self: *BitmapIndexScanOp) BitmapPlan {
@@ -9005,19 +9609,30 @@ pub const BitmapHeapScanOp = struct {
     /// "skip this candidate," not "the scan is exhausted."
     fn fetchRowFromDataTree(self: *BitmapHeapScanOp, data_row_key: []const u8) ExecError!?Row {
         var data_tree = BTree.init(self.pool, self.data_root_page_id);
-        const row_data = data_tree.get(self.allocator, data_row_key) catch return ExecError.StorageError;
+        const row_data =
+            data_tree.get(self.allocator, data_row_key) catch return ExecError.StorageError;
         if (row_data == null) return null; // Orphaned index entry
         defer self.allocator.free(row_data.?);
 
         // MVCC visibility check
         if (self.mvcc_ctx) |ctx| {
             if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
-                const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                const header =
+                    TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                if (!mvcc_mod.isTupleVisibleWithTm(
+                    header,
+                    ctx.snapshot,
+                    ctx.current_xid,
+                    ctx.current_cid,
+                    ctx.tm,
+                )) {
                     return null; // Tuple not visible
                 }
                 // Visible: deserialize column data (skip MVCC header)
-                const values = deserializeRow(self.allocator, row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch return ExecError.InvalidRowData;
+                const values = deserializeRow(
+                    self.allocator,
+                    row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..],
+                ) catch return ExecError.InvalidRowData;
                 errdefer {
                     for (values) |v| v.free(self.allocator);
                     self.allocator.free(values);
@@ -9031,7 +9646,8 @@ pub const BitmapHeapScanOp = struct {
             row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]
         else
             row_data.?;
-        const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
+        const values =
+            deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
         errdefer {
             for (values) |v| v.free(self.allocator);
             self.allocator.free(values);
@@ -9043,7 +9659,8 @@ pub const BitmapHeapScanOp = struct {
     /// ADD COLUMN`) with null and wrap into a `Row`. Takes ownership of `values`.
     fn padRow(self: *BitmapHeapScanOp, values: []Value) ExecError!Row {
         const padded_values = if (values.len < self.col_names.len) blk: {
-            const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+            const extended =
+                self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
             for (values, 0..) |v, i| extended[i] = v;
             for (values.len..self.col_names.len) |i| {
                 extended[i] = .null_value;
@@ -9052,7 +9669,8 @@ pub const BitmapHeapScanOp = struct {
             break :blk extended;
         } else values;
 
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        const cols =
+            self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
         for (self.col_names, 0..) |c, i| cols[i] = c;
 
         return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
@@ -9144,10 +9762,16 @@ pub const IndexOnlyScanOp = struct {
 
     /// Build a Row for `self.col_names` from a covering entry. `covering_columns[0]` is the
     /// index key column, supplied separately as `key_value` (the raw B+Tree leaf key, treated
-    /// as text) since its value isn't stored inside the entry — see `IndexScanOp.buildCoveringRow`
+    /// as text) since its value isn't stored inside the entry — see
+    /// `IndexScanOp.buildCoveringRow`
     /// for the full rationale. `covering_columns[1..]` maps 1:1, in order, onto `decoded_values`.
-    fn buildCoveringRow(self: *IndexOnlyScanOp, key_value: Value, decoded_values: []const Value) ExecError!Row {
-        const out_values = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+    fn buildCoveringRow(
+        self: *IndexOnlyScanOp,
+        key_value: Value,
+        decoded_values: []const Value,
+    ) ExecError!Row {
+        const out_values =
+            self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
         var out_i: usize = 0;
         errdefer {
             for (out_values[0..out_i]) |v| v.free(self.allocator);
@@ -9155,7 +9779,9 @@ pub const IndexOnlyScanOp = struct {
         }
         for (self.col_names) |want_col| {
             var matched: ?Value = null;
-            if (self.covering_columns.len > 0 and std.mem.eql(u8, want_col, self.covering_columns[0])) {
+            if (self.covering_columns.len > 0 and
+                std.mem.eql(u8, want_col, self.covering_columns[0]))
+            {
                 matched = key_value;
             } else if (self.covering_columns.len > 0) {
                 for (self.covering_columns[1..], 0..) |cov_col, j| {
@@ -9174,7 +9800,8 @@ pub const IndexOnlyScanOp = struct {
             out_i += 1;
         }
 
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        const cols =
+            self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
         for (self.col_names, 0..) |c, i| cols[i] = c;
 
         return Row{ .columns = cols, .values = out_values, .allocator = self.allocator };
@@ -9200,7 +9827,15 @@ pub const IndexOnlyScanOp = struct {
             }
 
             if (self.mvcc_ctx) |ctx| {
-                if (ctx.enabled and !mvcc_mod.isTupleVisibleWithTm(decoded.header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                if (ctx.enabled and
+                    !mvcc_mod.isTupleVisibleWithTm(
+                        decoded.header,
+                        ctx.snapshot,
+                        ctx.current_xid,
+                        ctx.current_cid,
+                        ctx.tm,
+                    ))
+                {
                     continue; // Tuple not visible — skip it
                 }
             }
@@ -9283,8 +9918,16 @@ pub const GinIndexScanOp = struct {
         // Lazy initialization: perform search on first call
         if (!self.search_done) {
             self.search_done = true;
-            var gin = gin_index_mod.GIN.init(self.allocator, self.pool, self.gin_root_page_id, self.opclass) catch return ExecError.StorageError;
-            self.candidates = gin.search(self.query_value, self.strategy) catch return ExecError.StorageError;
+            var gin = gin_index_mod.GIN.init(
+                self.allocator,
+                self.pool,
+                self.gin_root_page_id,
+                self.opclass,
+            ) catch return ExecError.StorageError;
+            self.candidates = gin.search(
+                self.query_value,
+                self.strategy,
+            ) catch return ExecError.StorageError;
         }
 
         // Iterate through candidates until we find a visible row
@@ -9299,7 +9942,8 @@ pub const GinIndexScanOp = struct {
 
             // Fetch the row from the data B+Tree
             var data_tree = BTree.init(self.pool, self.data_root_page_id);
-            const row_data = data_tree.get(self.allocator, &row_key_bytes) catch return ExecError.StorageError;
+            const row_data =
+                data_tree.get(self.allocator, &row_key_bytes) catch return ExecError.StorageError;
             if (row_data == null) {
                 // Orphaned posting-list entry: skip and continue to next candidate
                 continue;
@@ -9309,20 +9953,33 @@ pub const GinIndexScanOp = struct {
             // MVCC visibility check (reuse exact same logic as IndexScanOp)
             if (self.mvcc_ctx) |ctx| {
                 if (ctx.enabled and mvcc_mod.isVersionedRow(row_data.?)) {
-                    const header = TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                    if (!mvcc_mod.isTupleVisibleWithTm(header, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    const header =
+                        TupleHeader.deserialize(row_data.?[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    if (!mvcc_mod.isTupleVisibleWithTm(
+                        header,
+                        ctx.snapshot,
+                        ctx.current_xid,
+                        ctx.current_cid,
+                        ctx.tm,
+                    )) {
                         // Row not visible: skip and continue to next candidate
                         continue;
                     }
                     // Visible: deserialize column data (skip MVCC header)
-                    const values = deserializeRow(self.allocator, row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch return ExecError.InvalidRowData;
+                    const values = deserializeRow(
+                        self.allocator,
+                        row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..],
+                    ) catch return ExecError.InvalidRowData;
                     errdefer {
                         for (values) |v| v.free(self.allocator);
                         self.allocator.free(values);
                     }
                     // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
                     const padded_values = if (values.len < self.col_names.len) blk: {
-                        const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                        const extended = self.allocator.alloc(
+                            Value,
+                            self.col_names.len,
+                        ) catch return ExecError.OutOfMemory;
                         for (values, 0..) |v, i| extended[i] = v;
                         for (values.len..self.col_names.len) |i| {
                             extended[i] = if (self.col_defaults) |defs|
@@ -9333,9 +9990,16 @@ pub const GinIndexScanOp = struct {
                         self.allocator.free(values);
                         break :blk extended;
                     } else values;
-                    const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+                    const cols = self.allocator.alloc(
+                        []const u8,
+                        self.col_names.len,
+                    ) catch return ExecError.OutOfMemory;
                     for (self.col_names, 0..) |c, i| cols[i] = c;
-                    return Row{ .columns = cols, .values = padded_values, .allocator = self.allocator };
+                    return Row{
+                        .columns = cols,
+                        .values = padded_values,
+                        .allocator = self.allocator,
+                    };
                 }
             }
 
@@ -9344,7 +10008,8 @@ pub const GinIndexScanOp = struct {
                 row_data.?[mvcc_mod.MVCC_ROW_OVERHEAD..]
             else
                 row_data.?;
-            const values = deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
+            const values =
+                deserializeRow(self.allocator, row_bytes) catch return ExecError.InvalidRowData;
             errdefer {
                 for (values) |v| v.free(self.allocator);
                 self.allocator.free(values);
@@ -9352,7 +10017,10 @@ pub const GinIndexScanOp = struct {
 
             // Pad missing columns with defaults (for ALTER TABLE ADD COLUMN)
             const padded_values = if (values.len < self.col_names.len) blk: {
-                const extended = self.allocator.alloc(Value, self.col_names.len) catch return ExecError.OutOfMemory;
+                const extended = self.allocator.alloc(
+                    Value,
+                    self.col_names.len,
+                ) catch return ExecError.OutOfMemory;
                 for (values, 0..) |v, i| extended[i] = v;
                 for (values.len..self.col_names.len) |i| {
                     extended[i] = if (self.col_defaults) |defs|
@@ -9364,7 +10032,10 @@ pub const GinIndexScanOp = struct {
                 break :blk extended;
             } else values;
 
-            const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+            const cols = self.allocator.alloc(
+                []const u8,
+                self.col_names.len,
+            ) catch return ExecError.OutOfMemory;
             for (self.col_names, 0..) |c, i| cols[i] = c;
 
             return Row{
@@ -9395,7 +10066,7 @@ pub const GinIndexScanOp = struct {
     }
 };
 
-// ── Filter Operator ─────────────────────────────────────────────────────
+// ── Filter Operator ────────────────────────
 
 /// Applies a predicate to filter rows from its input.
 pub const FilterOp = struct {
@@ -9424,18 +10095,19 @@ pub const FilterOp = struct {
                 }
             else
                 row;
-            const val = evalExpr(self.allocator, self.predicate, &eval_row, self.catalog) catch |err| {
-                if (self.outer_row != null) eval_row.deinit();
-                row.deinit();
-                return switch (err) {
-                    error.OutOfMemory => ExecError.OutOfMemory,
-                    error.TypeError => ExecError.TypeError,
-                    error.DivisionByZero => ExecError.DivisionByZero,
-                    error.ColumnNotFound => ExecError.ColumnNotFound,
-                    error.UnsupportedExpression => ExecError.UnsupportedExpression,
-                    error.InvalidPattern => ExecError.InvalidPattern,
+            const val =
+                evalExpr(self.allocator, self.predicate, &eval_row, self.catalog) catch |err| {
+                    if (self.outer_row != null) eval_row.deinit();
+                    row.deinit();
+                    return switch (err) {
+                        error.OutOfMemory => ExecError.OutOfMemory,
+                        error.TypeError => ExecError.TypeError,
+                        error.DivisionByZero => ExecError.DivisionByZero,
+                        error.ColumnNotFound => ExecError.ColumnNotFound,
+                        error.UnsupportedExpression => ExecError.UnsupportedExpression,
+                        error.InvalidPattern => ExecError.InvalidPattern,
+                    };
                 };
-            };
             if (self.outer_row != null) eval_row.deinit();
             defer val.free(self.allocator);
 
@@ -9459,7 +10131,7 @@ pub const FilterOp = struct {
     }
 };
 
-// ── Project Operator ────────────────────────────────────────────────────
+// ── Project Operator ────────────────────────
 
 /// Selects/computes output columns from each input row.
 pub const ProjectOp = struct {
@@ -9468,7 +10140,12 @@ pub const ProjectOp = struct {
     columns: []const PlanNode.ProjectColumn,
     catalog: ?*Catalog,
 
-    pub fn init(allocator: Allocator, input: RowIterator, columns: []const PlanNode.ProjectColumn, catalog: ?*Catalog) ProjectOp {
+    pub fn init(
+        allocator: Allocator,
+        input: RowIterator,
+        columns: []const PlanNode.ProjectColumn,
+        catalog: ?*Catalog,
+    ) ProjectOp {
         return .{
             .allocator = allocator,
             .input = input,
@@ -9481,14 +10158,16 @@ pub const ProjectOp = struct {
         var row = try self.input.next() orelse return null;
         defer row.deinit();
 
-        const vals = self.allocator.alloc(Value, self.columns.len) catch return ExecError.OutOfMemory;
+        const vals =
+            self.allocator.alloc(Value, self.columns.len) catch return ExecError.OutOfMemory;
         var inited: usize = 0;
         errdefer {
             for (vals[0..inited]) |v| v.free(self.allocator);
             self.allocator.free(vals);
         }
 
-        const col_names = self.allocator.alloc([]const u8, self.columns.len) catch return ExecError.OutOfMemory;
+        const col_names =
+            self.allocator.alloc([]const u8, self.columns.len) catch return ExecError.OutOfMemory;
         errdefer self.allocator.free(col_names);
 
         for (self.columns, 0..) |col, i| {
@@ -9574,7 +10253,7 @@ fn exprColumnName(expr: *const ast.Expr) []const u8 {
     };
 }
 
-// ── Limit Operator ──────────────────────────────────────────────────────
+// ── Limit Operator ─────────────────────────
 
 /// Restricts output to a maximum number of rows, with optional offset.
 pub const LimitOp = struct {
@@ -9589,7 +10268,12 @@ pub const LimitOp = struct {
     order_by: []const ast.OrderByItem = &.{},
     tie_key: ?[]Value = null,
 
-    pub fn init(allocator: Allocator, input: RowIterator, limit_count: ?u64, offset_count: u64) LimitOp {
+    pub fn init(
+        allocator: Allocator,
+        input: RowIterator,
+        limit_count: ?u64,
+        offset_count: u64,
+    ) LimitOp {
         return .{
             .allocator = allocator,
             .input = input,
@@ -9675,7 +10359,7 @@ pub const LimitOp = struct {
     }
 };
 
-// ── Sort Operator ───────────────────────────────────────────────────────
+// ── Sort Operator ─────────────────────────
 
 /// In-memory sort. Materializes all input rows, sorts, then emits.
 pub const SortOp = struct {
@@ -9687,7 +10371,11 @@ pub const SortOp = struct {
     index: usize = 0,
     materialized: bool = false,
 
-    pub fn init(allocator: Allocator, input: RowIterator, order_by: []const ast.OrderByItem) SortOp {
+    pub fn init(
+        allocator: Allocator,
+        input: RowIterator,
+        order_by: []const ast.OrderByItem,
+    ) SortOp {
         return .{
             .allocator = allocator,
             .input = input,
@@ -9769,8 +10457,10 @@ pub const SortOp = struct {
 
                     // If a_null is true and nulls_first is true, a comes before b (return true)
                     // If a_null is true and nulls_first is false, a comes after b (return false)
-                    // If a_null is false (meaning b_null is true) and nulls_first is true, a comes after b (return false)
-                    // If a_null is false (meaning b_null is true) and nulls_first is false, a comes before b (return true)
+                    // If a_null is false (meaning b_null is true) and nulls_first is true, a comes
+                    // after b (return false)
+                    // If a_null is false (meaning b_null is true) and nulls_first is false, a comes
+                    // before b (return true)
                     return if (a_null) nulls_first else !nulls_first;
                 }
 
@@ -9787,7 +10477,7 @@ pub const SortOp = struct {
     };
 };
 
-// ── Window Operator ─────────────────────────────────────────────────────
+// ── Window Operator ────────────────────────
 
 /// Window function operator. Buffers all input rows, sorts by partition+order keys,
 /// then emits each row with computed window function values appended as extra columns.
@@ -9870,7 +10560,12 @@ pub const WindowOp = struct {
                 partition_start = ri;
                 var partition_end = ri + 1;
                 while (partition_end < num_rows) {
-                    if (!samePartition(alloc, wf.partition_by, &input_rows.items[indices[partition_start]], &input_rows.items[indices[partition_end]])) break;
+                    if (!samePartition(
+                        alloc,
+                        wf.partition_by,
+                        &input_rows.items[indices[partition_start]],
+                        &input_rows.items[indices[partition_end]],
+                    )) break;
                     partition_end += 1;
                 }
 
@@ -9890,8 +10585,10 @@ pub const WindowOp = struct {
         // 2. Build output rows: original columns + window function columns
         for (input_rows.items, 0..) |*row, row_idx| {
             const orig_cols = row.columns.len;
-            const new_cols = alloc.alloc([]const u8, orig_cols + num_funcs) catch return ExecError.OutOfMemory;
-            const new_vals = alloc.alloc(Value, orig_cols + num_funcs) catch return ExecError.OutOfMemory;
+            const new_cols =
+                alloc.alloc([]const u8, orig_cols + num_funcs) catch return ExecError.OutOfMemory;
+            const new_vals =
+                alloc.alloc(Value, orig_cols + num_funcs) catch return ExecError.OutOfMemory;
 
             // Copy original columns
             for (0..orig_cols) |i| {
@@ -9943,7 +10640,7 @@ pub const WindowOp = struct {
         };
     }
 
-    // ── Partition helpers ────────────────────────────────────────────
+    // ── Partition helpers ──────────────────────
 
     const WindowSortContext = struct {
         partition_by: []const *const ast.Expr,
@@ -9999,7 +10696,12 @@ pub const WindowOp = struct {
         }
     };
 
-    fn samePartition(alloc: Allocator, partition_by: []const *const ast.Expr, a: *const Row, b: *const Row) bool {
+    fn samePartition(
+        alloc: Allocator,
+        partition_by: []const *const ast.Expr,
+        a: *const Row,
+        b: *const Row,
+    ) bool {
         for (partition_by) |pb| {
             const av = evalExpr(alloc, pb, a, null) catch Value.null_value;
             defer av.free(alloc);
@@ -10038,7 +10740,14 @@ pub const WindowOp = struct {
         } else if (std.mem.eql(u8, func_name_lower, "rank")) {
             var rank: i64 = 1;
             for (partition_indices, 0..) |orig_idx, pos| {
-                if (pos > 0 and !orderKeysEqual(alloc, wf.order_by, &all_rows[partition_indices[pos - 1]], &all_rows[orig_idx])) {
+                if (pos > 0 and
+                    !orderKeysEqual(
+                        alloc,
+                        wf.order_by,
+                        &all_rows[partition_indices[pos - 1]],
+                        &all_rows[orig_idx],
+                    ))
+                {
                     rank = @intCast(pos + 1);
                 }
                 results[orig_idx] = .{ .integer = rank };
@@ -10046,35 +10755,63 @@ pub const WindowOp = struct {
         } else if (std.mem.eql(u8, func_name_lower, "dense_rank")) {
             var rank: i64 = 1;
             for (partition_indices, 0..) |orig_idx, pos| {
-                if (pos > 0 and !orderKeysEqual(alloc, wf.order_by, &all_rows[partition_indices[pos - 1]], &all_rows[orig_idx])) {
+                if (pos > 0 and
+                    !orderKeysEqual(
+                        alloc,
+                        wf.order_by,
+                        &all_rows[partition_indices[pos - 1]],
+                        &all_rows[orig_idx],
+                    ))
+                {
                     rank += 1;
                 }
                 results[orig_idx] = .{ .integer = rank };
             }
         } else if (std.mem.eql(u8, func_name_lower, "ntile")) {
             const n: i64 = if (wf.args.len > 0) blk: {
-                const val: Value = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[0]], null) catch .null_value;
+                const val: Value = evalExpr(
+                    alloc,
+                    wf.args[0],
+                    &all_rows[partition_indices[0]],
+                    null,
+                ) catch .null_value;
                 break :blk val.toInteger() orelse 1;
             } else 1;
-            const bucket_size = if (n > 0) @max(1, @divTrunc(@as(i64, @intCast(part_len)), n)) else 1;
+            const bucket_size =
+                if (n > 0) @max(1, @divTrunc(@as(i64, @intCast(part_len)), n)) else 1;
             for (partition_indices, 0..) |orig_idx, pos| {
                 const tile = @min(n, @divTrunc(@as(i64, @intCast(pos)), bucket_size) + 1);
                 results[orig_idx] = .{ .integer = tile };
             }
         } else if (std.mem.eql(u8, func_name_lower, "lag")) {
             const offset: usize = if (wf.args.len > 1) blk: {
-                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]], null) catch .null_value;
+                const val: Value = evalExpr(
+                    alloc,
+                    wf.args[1],
+                    &all_rows[partition_indices[0]],
+                    null,
+                ) catch .null_value;
                 break :blk @intCast(val.toInteger() orelse 1);
             } else 1;
             const default_val: Value = if (wf.args.len > 2)
-                evalExpr(alloc, wf.args[2], &all_rows[partition_indices[0]], null) catch Value.null_value
+                evalExpr(
+                    alloc,
+                    wf.args[2],
+                    &all_rows[partition_indices[0]],
+                    null,
+                ) catch Value.null_value
             else
                 Value.null_value;
             for (partition_indices, 0..) |orig_idx, pos| {
                 if (pos >= offset) {
                     const prev_idx = partition_indices[pos - offset];
                     if (wf.args.len > 0) {
-                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[prev_idx], null) catch Value.null_value;
+                        results[orig_idx] = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[prev_idx],
+                            null,
+                        ) catch Value.null_value;
                     } else {
                         results[orig_idx] = Value.null_value;
                     }
@@ -10085,18 +10822,33 @@ pub const WindowOp = struct {
             if (wf.args.len > 2) default_val.free(alloc);
         } else if (std.mem.eql(u8, func_name_lower, "lead")) {
             const offset: usize = if (wf.args.len > 1) blk: {
-                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]], null) catch .null_value;
+                const val: Value = evalExpr(
+                    alloc,
+                    wf.args[1],
+                    &all_rows[partition_indices[0]],
+                    null,
+                ) catch .null_value;
                 break :blk @intCast(val.toInteger() orelse 1);
             } else 1;
             const default_val: Value = if (wf.args.len > 2)
-                evalExpr(alloc, wf.args[2], &all_rows[partition_indices[0]], null) catch Value.null_value
+                evalExpr(
+                    alloc,
+                    wf.args[2],
+                    &all_rows[partition_indices[0]],
+                    null,
+                ) catch Value.null_value
             else
                 Value.null_value;
             for (partition_indices, 0..) |orig_idx, pos| {
                 if (pos + offset < part_len) {
                     const next_idx = partition_indices[pos + offset];
                     if (wf.args.len > 0) {
-                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[next_idx], null) catch Value.null_value;
+                        results[orig_idx] = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[next_idx],
+                            null,
+                        ) catch Value.null_value;
                     } else {
                         results[orig_idx] = Value.null_value;
                     }
@@ -10108,7 +10860,12 @@ pub const WindowOp = struct {
         } else if (std.mem.eql(u8, func_name_lower, "first_value")) {
             if (wf.args.len > 0) {
                 for (partition_indices) |orig_idx| {
-                    results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[0]], null) catch Value.null_value;
+                    results[orig_idx] = evalExpr(
+                        alloc,
+                        wf.args[0],
+                        &all_rows[partition_indices[0]],
+                        null,
+                    ) catch Value.null_value;
                 }
             } else {
                 for (partition_indices) |orig_idx| results[orig_idx] = Value.null_value;
@@ -10116,7 +10873,8 @@ pub const WindowOp = struct {
         } else if (std.mem.eql(u8, func_name_lower, "last_value")) {
             // Default frame is RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             // so last_value with default frame returns current row's value.
-            // With ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING, it returns actual last.
+            // With ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING, it returns actual
+            // last.
             const use_full_partition = if (wf.frame) |frame|
                 @as(std.meta.Tag(ast.WindowFrameBound), frame.end) == .unbounded_following
             else
@@ -10124,12 +10882,22 @@ pub const WindowOp = struct {
             if (wf.args.len > 0) {
                 if (use_full_partition) {
                     for (partition_indices) |orig_idx| {
-                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[part_len - 1]], null) catch Value.null_value;
+                        results[orig_idx] = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[partition_indices[part_len - 1]],
+                            null,
+                        ) catch Value.null_value;
                     }
                 } else {
                     // Default frame: last_value = current row's value
                     for (partition_indices) |orig_idx| {
-                        results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[orig_idx], null) catch Value.null_value;
+                        results[orig_idx] = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[orig_idx],
+                            null,
+                        ) catch Value.null_value;
                     }
                 }
             } else {
@@ -10137,12 +10905,22 @@ pub const WindowOp = struct {
             }
         } else if (std.mem.eql(u8, func_name_lower, "nth_value")) {
             const n: usize = if (wf.args.len > 1) blk: {
-                const val: Value = evalExpr(alloc, wf.args[1], &all_rows[partition_indices[0]], null) catch .null_value;
+                const val: Value = evalExpr(
+                    alloc,
+                    wf.args[1],
+                    &all_rows[partition_indices[0]],
+                    null,
+                ) catch .null_value;
                 break :blk @intCast(val.toInteger() orelse 1);
             } else 1;
             if (wf.args.len > 0 and n >= 1 and n <= part_len) {
                 for (partition_indices) |orig_idx| {
-                    results[orig_idx] = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[n - 1]], null) catch Value.null_value;
+                    results[orig_idx] = evalExpr(
+                        alloc,
+                        wf.args[0],
+                        &all_rows[partition_indices[n - 1]],
+                        null,
+                    ) catch Value.null_value;
                 }
             } else {
                 for (partition_indices) |orig_idx| results[orig_idx] = Value.null_value;
@@ -10153,10 +10931,18 @@ pub const WindowOp = struct {
             } else {
                 var rank: i64 = 1;
                 for (partition_indices, 0..) |orig_idx, pos| {
-                    if (pos > 0 and !orderKeysEqual(alloc, wf.order_by, &all_rows[partition_indices[pos - 1]], &all_rows[orig_idx])) {
+                    if (pos > 0 and
+                        !orderKeysEqual(
+                            alloc,
+                            wf.order_by,
+                            &all_rows[partition_indices[pos - 1]],
+                            &all_rows[orig_idx],
+                        ))
+                    {
                         rank = @intCast(pos + 1);
                     }
-                    const pr = @as(f64, @floatFromInt(rank - 1)) / @as(f64, @floatFromInt(part_len - 1));
+                    const pr =
+                        @as(f64, @floatFromInt(rank - 1)) / @as(f64, @floatFromInt(part_len - 1));
                     results[orig_idx] = .{ .real = pr };
                 }
             }
@@ -10166,7 +10952,14 @@ pub const WindowOp = struct {
                 var count: usize = pos + 1;
                 // Include subsequent rows with equal order key
                 var k = pos + 1;
-                while (k < part_len and orderKeysEqual(alloc, wf.order_by, &all_rows[orig_idx], &all_rows[partition_indices[k]])) : (k += 1) {
+                while (k < part_len and
+                    orderKeysEqual(
+                        alloc,
+                        wf.order_by,
+                        &all_rows[orig_idx],
+                        &all_rows[partition_indices[k]],
+                    )) : (k += 1)
+                {
                     count += 1;
                 }
                 const cd = @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(part_len));
@@ -10192,8 +10985,18 @@ pub const WindowOp = struct {
         return switch (exclusion) {
             .no_others => false,
             .current_row => fi == pos,
-            .group => orderKeysEqual(alloc, order_by, &all_rows[partition_indices[fi]], &all_rows[partition_indices[pos]]),
-            .ties => fi != pos and orderKeysEqual(alloc, order_by, &all_rows[partition_indices[fi]], &all_rows[partition_indices[pos]]),
+            .group => orderKeysEqual(
+                alloc,
+                order_by,
+                &all_rows[partition_indices[fi]],
+                &all_rows[partition_indices[pos]],
+            ),
+            .ties => fi != pos and orderKeysEqual(
+                alloc,
+                order_by,
+                &all_rows[partition_indices[fi]],
+                &all_rows[partition_indices[pos]],
+            ),
         };
     }
 
@@ -10207,12 +11010,15 @@ pub const WindowOp = struct {
         var name_buf: [32]u8 = undefined;
         const func_name_lower = toLower(wf.name, &name_buf);
         const is_count_star = std.mem.eql(u8, func_name_lower, "count") and
-            (wf.args.len == 0 or (wf.args.len > 0 and wf.args[0].* == .column_ref and std.mem.eql(u8, wf.args[0].column_ref.name, "*")));
+            (wf.args.len == 0 or
+                (wf.args.len > 0 and wf.args[0].* == .column_ref and
+                    std.mem.eql(u8, wf.args[0].column_ref.name, "*")));
         const exclusion: ast.FrameExclusion = if (wf.frame) |f| f.exclusion else .no_others;
 
         // Determine frame bounds for each row
         for (partition_indices, 0..) |orig_idx, pos| {
-            const frame_range = resolveFrameRange(wf.frame, pos, partition_indices.len, wf.order_by.len > 0);
+            const frame_range =
+                resolveFrameRange(wf.frame, pos, partition_indices.len, wf.order_by.len > 0);
             const frame_start = frame_range[0];
             const frame_end = frame_range[1];
 
@@ -10222,7 +11028,15 @@ pub const WindowOp = struct {
                 } else {
                     var count: i64 = 0;
                     for (frame_start..frame_end) |fi| {
-                        if (!shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices))
+                        if (!shouldExcludeFramePos(
+                            alloc,
+                            exclusion,
+                            fi,
+                            pos,
+                            wf.order_by,
+                            all_rows,
+                            partition_indices,
+                        ))
                             count += 1;
                     }
                     results[orig_idx] = .{ .integer = count };
@@ -10230,9 +11044,22 @@ pub const WindowOp = struct {
             } else if (std.mem.eql(u8, func_name_lower, "count")) {
                 var count: i64 = 0;
                 for (frame_start..frame_end) |fi| {
-                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
+                    if (shouldExcludeFramePos(
+                        alloc,
+                        exclusion,
+                        fi,
+                        pos,
+                        wf.order_by,
+                        all_rows,
+                        partition_indices,
+                    )) continue;
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
+                        const v = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[partition_indices[fi]],
+                            null,
+                        ) catch Value.null_value;
                         defer v.free(alloc);
                         if (v != .null_value) count += 1;
                     }
@@ -10244,9 +11071,22 @@ pub const WindowOp = struct {
                 var has_real = false;
                 var has_any = false;
                 for (frame_start..frame_end) |fi| {
-                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
+                    if (shouldExcludeFramePos(
+                        alloc,
+                        exclusion,
+                        fi,
+                        pos,
+                        wf.order_by,
+                        all_rows,
+                        partition_indices,
+                    )) continue;
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
+                        const v = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[partition_indices[fi]],
+                            null,
+                        ) catch Value.null_value;
                         defer v.free(alloc);
                         switch (v) {
                             .integer => |iv| {
@@ -10273,9 +11113,22 @@ pub const WindowOp = struct {
                 var sum: f64 = 0;
                 var count: usize = 0;
                 for (frame_start..frame_end) |fi| {
-                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
+                    if (shouldExcludeFramePos(
+                        alloc,
+                        exclusion,
+                        fi,
+                        pos,
+                        wf.order_by,
+                        all_rows,
+                        partition_indices,
+                    )) continue;
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
+                        const v = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[partition_indices[fi]],
+                            null,
+                        ) catch Value.null_value;
                         defer v.free(alloc);
                         switch (v) {
                             .integer => |iv| {
@@ -10298,9 +11151,22 @@ pub const WindowOp = struct {
             } else if (std.mem.eql(u8, func_name_lower, "min")) {
                 var min_val: Value = Value.null_value;
                 for (frame_start..frame_end) |fi| {
-                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
+                    if (shouldExcludeFramePos(
+                        alloc,
+                        exclusion,
+                        fi,
+                        pos,
+                        wf.order_by,
+                        all_rows,
+                        partition_indices,
+                    )) continue;
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
+                        const v = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[partition_indices[fi]],
+                            null,
+                        ) catch Value.null_value;
                         if (v == .null_value) {
                             v.free(alloc);
                             continue;
@@ -10317,9 +11183,22 @@ pub const WindowOp = struct {
             } else if (std.mem.eql(u8, func_name_lower, "max")) {
                 var max_val: Value = Value.null_value;
                 for (frame_start..frame_end) |fi| {
-                    if (shouldExcludeFramePos(alloc, exclusion, fi, pos, wf.order_by, all_rows, partition_indices)) continue;
+                    if (shouldExcludeFramePos(
+                        alloc,
+                        exclusion,
+                        fi,
+                        pos,
+                        wf.order_by,
+                        all_rows,
+                        partition_indices,
+                    )) continue;
                     if (wf.args.len > 0) {
-                        const v = evalExpr(alloc, wf.args[0], &all_rows[partition_indices[fi]], null) catch Value.null_value;
+                        const v = evalExpr(
+                            alloc,
+                            wf.args[0],
+                            &all_rows[partition_indices[fi]],
+                            null,
+                        ) catch Value.null_value;
                         if (v == .null_value) {
                             v.free(alloc);
                             continue;
@@ -10342,7 +11221,12 @@ pub const WindowOp = struct {
     /// Resolve frame bounds to a [start, end) range within the partition.
     /// SQL standard: with ORDER BY → default RANGE UNBOUNDED PRECEDING TO CURRENT ROW;
     /// without ORDER BY → default entire partition.
-    fn resolveFrameRange(frame: ?*const ast.WindowFrameSpec, pos: usize, part_len: usize, has_order_by: bool) [2]usize {
+    fn resolveFrameRange(
+        frame: ?*const ast.WindowFrameSpec,
+        pos: usize,
+        part_len: usize,
+        has_order_by: bool,
+    ) [2]usize {
         if (frame) |f| {
             const start = resolveOneBound(f.start, pos, part_len, true);
             const end = resolveOneBound(f.end, pos, part_len, false);
@@ -10356,7 +11240,12 @@ pub const WindowOp = struct {
         return .{ 0, part_len };
     }
 
-    fn resolveOneBound(bound: ast.WindowFrameBound, pos: usize, part_len: usize, is_start: bool) usize {
+    fn resolveOneBound(
+        bound: ast.WindowFrameBound,
+        pos: usize,
+        part_len: usize,
+        is_start: bool,
+    ) usize {
         _ = is_start;
         return switch (bound) {
             .unbounded_preceding => 0,
@@ -10367,7 +11256,12 @@ pub const WindowOp = struct {
         };
     }
 
-    fn orderKeysEqual(alloc: Allocator, order_by: []const ast.OrderByItem, a: *const Row, b: *const Row) bool {
+    fn orderKeysEqual(
+        alloc: Allocator,
+        order_by: []const ast.OrderByItem,
+        a: *const Row,
+        b: *const Row,
+    ) bool {
         for (order_by) |ob| {
             const av = evalExpr(alloc, ob.expr, a, null) catch Value.null_value;
             defer av.free(alloc);
@@ -10379,7 +11273,7 @@ pub const WindowOp = struct {
     }
 };
 
-// ── MATCH_RECOGNIZE Operator ────────────────────────────────────────────
+// ── MATCH_RECOGNIZE Operator ─────────────────────
 
 /// MATCH_RECOGNIZE operator. Buffers all input rows, sorts by partition + order keys,
 /// then scans for pattern matches within each partition and emits result rows based on
@@ -10453,7 +11347,8 @@ pub const MatchRecognizeOp = struct {
         // non-trivial, and let a match's end_exclusive land outside `partition_indices`
         // entirely (an unmapped position past the last row), which stalled the AFTER MATCH
         // SKIP PAST LAST ROW scan position forever — an infinite loop.
-        const sorted_rows = alloc.alloc(Row, input_rows.items.len) catch return ExecError.OutOfMemory;
+        const sorted_rows =
+            alloc.alloc(Row, input_rows.items.len) catch return ExecError.OutOfMemory;
         defer alloc.free(sorted_rows);
         for (indices, 0..) |orig_idx, i| sorted_rows[i] = input_rows.items[orig_idx];
 
@@ -10463,7 +11358,12 @@ pub const MatchRecognizeOp = struct {
             const partition_start = pi;
             var partition_end = pi + 1;
             while (partition_end < sorted_rows.len) {
-                if (!samePartitionMatch(alloc, self.spec.partition_by, &sorted_rows[partition_start], &sorted_rows[partition_end])) {
+                if (!samePartitionMatch(
+                    alloc,
+                    self.spec.partition_by,
+                    &sorted_rows[partition_start],
+                    &sorted_rows[partition_end],
+                )) {
                     break;
                 }
                 partition_end += 1;
@@ -10479,7 +11379,11 @@ pub const MatchRecognizeOp = struct {
         self.materialized = true;
     }
 
-    fn findMatchesInPartition(self: *MatchRecognizeOp, alloc: Allocator, partition_rows: []const Row) ExecError!void {
+    fn findMatchesInPartition(
+        self: *MatchRecognizeOp,
+        alloc: Allocator,
+        partition_rows: []const Row,
+    ) ExecError!void {
         if (partition_rows.len == 0) return;
 
         var scan_pos: usize = 0;
@@ -10532,7 +11436,12 @@ pub const MatchRecognizeOp = struct {
         }
     }
 
-    fn emitOneRowPerMatch(self: *MatchRecognizeOp, alloc: Allocator, all_rows: []const Row, match: *const pattern_match_mod.Match) ExecError!void {
+    fn emitOneRowPerMatch(
+        self: *MatchRecognizeOp,
+        alloc: Allocator,
+        all_rows: []const Row,
+        match: *const pattern_match_mod.Match,
+    ) ExecError!void {
         // Build output row with PARTITION BY + MEASURE columns
         var columns = std.ArrayListUnmanaged([]const u8){};
         defer columns.deinit(alloc);
@@ -10545,7 +11454,12 @@ pub const MatchRecognizeOp = struct {
         // MEASURES. Other per-row columns are not addressable in this mode (use MEASURES with
         // FIRST()/LAST() to pull a specific row's value).
         for (self.spec.partition_by) |pb_expr| {
-            const val = evalExpr(alloc, pb_expr, &all_rows[match.start], self.catalog) catch Value.null_value;
+            const val = evalExpr(
+                alloc,
+                pb_expr,
+                &all_rows[match.start],
+                self.catalog,
+            ) catch Value.null_value;
             columns.append(alloc, exprColumnName(pb_expr)) catch return ExecError.OutOfMemory;
             values.append(alloc, val) catch return ExecError.OutOfMemory;
         }
@@ -10575,7 +11489,12 @@ pub const MatchRecognizeOp = struct {
         self.result_rows.append(self.allocator, output_row) catch return ExecError.OutOfMemory;
     }
 
-    fn emitAllRowsPerMatch(self: *MatchRecognizeOp, alloc: Allocator, all_rows: []const Row, match: *const pattern_match_mod.Match) ExecError!void {
+    fn emitAllRowsPerMatch(
+        self: *MatchRecognizeOp,
+        alloc: Allocator,
+        all_rows: []const Row,
+        match: *const pattern_match_mod.Match,
+    ) ExecError!void {
         // Emit one row per matched input row. Per SQL:2016, ALL ROWS PER MATCH exposes each
         // matched row's own columns (there is a 1:1 correspondence with input rows here, unlike
         // ONE ROW PER MATCH), plus any MEASURES re-evaluated per row.
@@ -10606,7 +11525,8 @@ pub const MatchRecognizeOp = struct {
                     .end_exclusive = match.start + row_offset + 1,
                     .variable_per_row = match.variable_per_row[0 .. row_offset + 1],
                 };
-                const effective_match: *const pattern_match_mod.Match = if (measure.semantics == .running) &truncated_match else match;
+                const effective_match: *const pattern_match_mod.Match =
+                    if (measure.semantics == .running) &truncated_match else match;
 
                 const match_eval_ctx = MatchEvalContext{
                     .op = self,
@@ -10632,7 +11552,12 @@ pub const MatchRecognizeOp = struct {
     }
 
     /// Evaluate an expression within MATCH_RECOGNIZE context, handling special functions
-    fn evalMatchExpr(self: *MatchRecognizeOp, alloc: Allocator, expr: *const ast.Expr, ctx: MatchEvalContext) ExecError!Value {
+    fn evalMatchExpr(
+        self: *MatchRecognizeOp,
+        alloc: Allocator,
+        expr: *const ast.Expr,
+        ctx: MatchEvalContext,
+    ) ExecError!Value {
         // Check for special MATCH_RECOGNIZE functions
         switch (expr.*) {
             .function_call => |fc| {
@@ -10662,7 +11587,8 @@ pub const MatchRecognizeOp = struct {
                 // Not a MATCH_RECOGNIZE navigation function — fall through to plain evaluation.
             },
             // Recurse structurally so a PREV()/NEXT()/FIRST()/LAST()/MATCH_NUMBER()/CLASSIFIER()
-            // call nested inside a comparison (the realistic case — e.g. `B.price < PREV(B.price)`)
+            // call nested inside a comparison (the realistic case — e.g. `B.price <
+            // PREV(B.price)`)
             // is still intercepted. Without this, only a DEFINE/MEASURES expression consisting of
             // nothing but a bare navigation-function call would ever resolve correctly.
             .paren => |inner| return self.evalMatchExpr(alloc, inner, ctx),
@@ -10682,14 +11608,21 @@ pub const MatchRecognizeOp = struct {
         }
 
         // Literal, column_ref, non-nav function call, or any other node without
-        // MATCH_RECOGNIZE-specific semantics: evaluate against the current row (or last row if not specified)
-        const current_row_idx = ctx.current_row_offset orelse (if (ctx.match) |m| m.end_exclusive - 1 else 0);
+        // MATCH_RECOGNIZE-specific semantics: evaluate against the current row (or last row if not
+        // specified)
+        const current_row_idx =
+            ctx.current_row_offset orelse (if (ctx.match) |m| m.end_exclusive - 1 else 0);
         const current_row = &ctx.all_rows[current_row_idx];
 
         return try evalExpr(alloc, expr, current_row, self.catalog);
     }
 
-    fn evalPrev(self: *MatchRecognizeOp, alloc: Allocator, args: []const *const ast.Expr, ctx: MatchEvalContext) ExecError!Value {
+    fn evalPrev(
+        self: *MatchRecognizeOp,
+        alloc: Allocator,
+        args: []const *const ast.Expr,
+        ctx: MatchEvalContext,
+    ) ExecError!Value {
         if (args.len == 0) return Value.null_value;
 
         const offset: usize = if (args.len > 1) blk: {
@@ -10712,7 +11645,12 @@ pub const MatchRecognizeOp = struct {
         return Value.null_value;
     }
 
-    fn evalNext(self: *MatchRecognizeOp, alloc: Allocator, args: []const *const ast.Expr, ctx: MatchEvalContext) ExecError!Value {
+    fn evalNext(
+        self: *MatchRecognizeOp,
+        alloc: Allocator,
+        args: []const *const ast.Expr,
+        ctx: MatchEvalContext,
+    ) ExecError!Value {
         if (args.len == 0) return Value.null_value;
 
         const offset: usize = if (args.len > 1) blk: {
@@ -10735,7 +11673,12 @@ pub const MatchRecognizeOp = struct {
         return Value.null_value;
     }
 
-    fn evalFirst(self: *MatchRecognizeOp, alloc: Allocator, args: []const *const ast.Expr, ctx: MatchEvalContext) ExecError!Value {
+    fn evalFirst(
+        self: *MatchRecognizeOp,
+        alloc: Allocator,
+        args: []const *const ast.Expr,
+        ctx: MatchEvalContext,
+    ) ExecError!Value {
         if (args.len == 0) return Value.null_value;
 
         const match = ctx.match orelse return Value.null_value;
@@ -10743,7 +11686,12 @@ pub const MatchRecognizeOp = struct {
         return try evalExpr(alloc, args[0], first_row, self.catalog);
     }
 
-    fn evalLast(self: *MatchRecognizeOp, alloc: Allocator, args: []const *const ast.Expr, ctx: MatchEvalContext) ExecError!Value {
+    fn evalLast(
+        self: *MatchRecognizeOp,
+        alloc: Allocator,
+        args: []const *const ast.Expr,
+        ctx: MatchEvalContext,
+    ) ExecError!Value {
         if (args.len == 0) return Value.null_value;
 
         const match = ctx.match orelse return Value.null_value;
@@ -10779,7 +11727,7 @@ pub const MatchRecognizeOp = struct {
         };
     }
 
-    // ── Match context and helpers ───────────────────────────────
+    // ── Match context and helpers ────────────────────
 
     const MatchContextImpl = struct {
         op: *MatchRecognizeOp,
@@ -10793,7 +11741,13 @@ pub const MatchRecognizeOp = struct {
             };
         }
 
-        fn tryVariable(ptr: *anyopaque, variable: []const u8, row_idx: usize, match_start: usize, bindings_so_far: []const []const u8) bool {
+        fn tryVariable(
+            ptr: *anyopaque,
+            variable: []const u8,
+            row_idx: usize,
+            match_start: usize,
+            bindings_so_far: []const []const u8,
+        ) bool {
             const self = @as(*MatchContextImpl, @ptrCast(@alignCast(ptr)));
 
             // Find DefineItem for this variable
@@ -10817,7 +11771,11 @@ pub const MatchRecognizeOp = struct {
                         .in_define = true,
                         .current_row_offset = row_idx,
                     };
-                    const condition_result = self.op.evalMatchExpr(self.allocator, define_item.condition, eval_ctx) catch return false;
+                    const condition_result = self.op.evalMatchExpr(
+                        self.allocator,
+                        define_item.condition,
+                        eval_ctx,
+                    ) catch return false;
                     defer condition_result.free(self.allocator);
 
                     // Check if result is truthy
@@ -10893,7 +11851,12 @@ pub const MatchRecognizeOp = struct {
     };
 };
 
-fn samePartitionMatch(alloc: Allocator, partition_by: []const *const ast.Expr, a: *const Row, b: *const Row) bool {
+fn samePartitionMatch(
+    alloc: Allocator,
+    partition_by: []const *const ast.Expr,
+    a: *const Row,
+    b: *const Row,
+) bool {
     for (partition_by) |pb| {
         const av = evalExpr(alloc, pb, a, null) catch Value.null_value;
         defer av.free(alloc);
@@ -10912,7 +11875,7 @@ fn toLowerMatch(name: []const u8, buf: []u8) []const u8 {
     return buf[0..len];
 }
 
-// ── Aggregate Operator ──────────────────────────────────────────────────
+// ── Aggregate Operator ───────────────────────
 
 /// GROUP BY with aggregate functions. Materializes all input, groups, then emits.
 pub const AggregateOp = struct {
@@ -10965,7 +11928,10 @@ pub const AggregateOp = struct {
                     try self.emitGroupingSetRow(input_rows.items, active_set);
                 } else {
                     // Shallow-copy row headers so we can sort without affecting other passes
-                    const pass_rows = self.allocator.alloc(Row, input_rows.items.len) catch return ExecError.OutOfMemory;
+                    const pass_rows = self.allocator.alloc(
+                        Row,
+                        input_rows.items.len,
+                    ) catch return ExecError.OutOfMemory;
                     defer self.allocator.free(pass_rows);
                     @memcpy(pass_rows, input_rows.items);
 
@@ -10974,7 +11940,12 @@ pub const AggregateOp = struct {
 
                     var group_start: usize = 0;
                     for (pass_rows[1..], 1..) |_, i| {
-                        if (!groupKeysEqual(self.allocator, active_set, &pass_rows[group_start], &pass_rows[i])) {
+                        if (!groupKeysEqual(
+                            self.allocator,
+                            active_set,
+                            &pass_rows[group_start],
+                            &pass_rows[i],
+                        )) {
                             try self.emitGroupingSetRow(pass_rows[group_start..i], active_set);
                             group_start = i;
                         }
@@ -11000,7 +11971,12 @@ pub const AggregateOp = struct {
 
             var group_start: usize = 0;
             for (input_rows.items[1..], 1..) |_, i| {
-                if (!groupKeysEqual(self.allocator, self.group_by, &input_rows.items[group_start], &input_rows.items[i])) {
+                if (!groupKeysEqual(
+                    self.allocator,
+                    self.group_by,
+                    &input_rows.items[group_start],
+                    &input_rows.items[i],
+                )) {
                     try self.emitAggregateRow(input_rows.items[group_start..i]);
                     group_start = i;
                 }
@@ -11020,7 +11996,8 @@ pub const AggregateOp = struct {
             self.allocator.free(vals);
         }
 
-        const col_names = self.allocator.alloc([]const u8, total_cols) catch return ExecError.OutOfMemory;
+        const col_names =
+            self.allocator.alloc([]const u8, total_cols) catch return ExecError.OutOfMemory;
         errdefer self.allocator.free(col_names);
 
         // Group by columns from first row in group
@@ -11053,7 +12030,11 @@ pub const AggregateOp = struct {
         }) catch return ExecError.OutOfMemory;
     }
 
-    fn emitGroupingSetRow(self: *AggregateOp, group: []const Row, active_set: []const *const ast.Expr) ExecError!void {
+    fn emitGroupingSetRow(
+        self: *AggregateOp,
+        group: []const Row,
+        active_set: []const *const ast.Expr,
+    ) ExecError!void {
         const total_cols = self.group_by.len + self.aggregates.len;
         const vals = self.allocator.alloc(Value, total_cols) catch return ExecError.OutOfMemory;
         var inited: usize = 0;
@@ -11061,7 +12042,8 @@ pub const AggregateOp = struct {
             for (vals[0..inited]) |v| v.free(self.allocator);
             self.allocator.free(vals);
         }
-        const col_names = self.allocator.alloc([]const u8, total_cols) catch return ExecError.OutOfMemory;
+        const col_names =
+            self.allocator.alloc([]const u8, total_cols) catch return ExecError.OutOfMemory;
         errdefer self.allocator.free(col_names);
 
         for (self.group_by, 0..) |gb_expr, i| {
@@ -11137,7 +12119,11 @@ pub const AggregateOp = struct {
         return indices;
     }
 
-    fn computeAggregate(self: *AggregateOp, agg: planner_mod.PlanNode.AggregateExpr, group: []const Row) Value {
+    fn computeAggregate(
+        self: *AggregateOp,
+        agg: planner_mod.PlanNode.AggregateExpr,
+        group: []const Row,
+    ) Value {
         switch (agg.func) {
             .count_star => {
                 if (agg.filter_expr) |filter| {
@@ -11167,7 +12153,8 @@ pub const AggregateOp = struct {
                             if (fv != .boolean or !fv.boolean) continue;
                         }
                         if (agg.arg) |arg_expr| {
-                            const val = evalExpr(self.allocator, arg_expr, row, null) catch continue;
+                            const val =
+                                evalExpr(self.allocator, arg_expr, row, null) catch continue;
                             defer val.free(self.allocator);
                             if (val == .null_value) continue;
                             const key = serializeRow(self.allocator, &.{val}) catch continue;
@@ -11377,12 +12364,14 @@ pub const AggregateOp = struct {
                     switch (v) {
                         .integer => |vi| {
                             var buf: [32]u8 = undefined;
-                            const num_str = std.fmt.bufPrint(&buf, "{d}", .{vi}) catch return .null_value;
+                            const num_str =
+                                std.fmt.bufPrint(&buf, "{d}", .{vi}) catch return .null_value;
                             result.appendSlice(self.allocator, num_str) catch return .null_value;
                         },
                         .real => |vf| {
                             var buf: [64]u8 = undefined;
-                            const num_str = std.fmt.bufPrint(&buf, "{d}", .{vf}) catch return .null_value;
+                            const num_str =
+                                std.fmt.bufPrint(&buf, "{d}", .{vf}) catch return .null_value;
                             result.appendSlice(self.allocator, num_str) catch return .null_value;
                         },
                         .text => |vt| {
@@ -11390,13 +12379,25 @@ pub const AggregateOp = struct {
                             result.append(self.allocator, '"') catch return .null_value;
                             for (vt) |c| {
                                 if (c == '"') {
-                                    result.appendSlice(self.allocator, "\\\"") catch return .null_value;
+                                    result.appendSlice(
+                                        self.allocator,
+                                        "\\\"",
+                                    ) catch return .null_value;
                                 } else if (c == '\\') {
-                                    result.appendSlice(self.allocator, "\\\\") catch return .null_value;
+                                    result.appendSlice(
+                                        self.allocator,
+                                        "\\\\",
+                                    ) catch return .null_value;
                                 } else if (c == '\n') {
-                                    result.appendSlice(self.allocator, "\\n") catch return .null_value;
+                                    result.appendSlice(
+                                        self.allocator,
+                                        "\\n",
+                                    ) catch return .null_value;
                                 } else if (c == '\r') {
-                                    result.appendSlice(self.allocator, "\\r") catch return .null_value;
+                                    result.appendSlice(
+                                        self.allocator,
+                                        "\\r",
+                                    ) catch return .null_value;
                                 } else {
                                     result.append(self.allocator, c) catch return .null_value;
                                 }
@@ -11404,7 +12405,10 @@ pub const AggregateOp = struct {
                             result.append(self.allocator, '"') catch return .null_value;
                         },
                         .boolean => |vb| {
-                            result.appendSlice(self.allocator, if (vb) "true" else "false") catch return .null_value;
+                            result.appendSlice(
+                                self.allocator,
+                                if (vb) "true" else "false",
+                            ) catch return .null_value;
                         },
                         else => {
                             result.appendSlice(self.allocator, "null") catch return .null_value;
@@ -11468,12 +12472,14 @@ pub const AggregateOp = struct {
                     switch (v) {
                         .integer => |vi| {
                             var buf: [32]u8 = undefined;
-                            const num_str = std.fmt.bufPrint(&buf, "{d}", .{vi}) catch return .null_value;
+                            const num_str =
+                                std.fmt.bufPrint(&buf, "{d}", .{vi}) catch return .null_value;
                             result.appendSlice(self.allocator, num_str) catch return .null_value;
                         },
                         .real => |vf| {
                             var buf: [64]u8 = undefined;
-                            const num_str = std.fmt.bufPrint(&buf, "{d}", .{vf}) catch return .null_value;
+                            const num_str =
+                                std.fmt.bufPrint(&buf, "{d}", .{vf}) catch return .null_value;
                             result.appendSlice(self.allocator, num_str) catch return .null_value;
                         },
                         .text => |vt| {
@@ -11481,13 +12487,25 @@ pub const AggregateOp = struct {
                             result.append(self.allocator, '"') catch return .null_value;
                             for (vt) |c| {
                                 if (c == '"') {
-                                    result.appendSlice(self.allocator, "\\\"") catch return .null_value;
+                                    result.appendSlice(
+                                        self.allocator,
+                                        "\\\"",
+                                    ) catch return .null_value;
                                 } else if (c == '\\') {
-                                    result.appendSlice(self.allocator, "\\\\") catch return .null_value;
+                                    result.appendSlice(
+                                        self.allocator,
+                                        "\\\\",
+                                    ) catch return .null_value;
                                 } else if (c == '\n') {
-                                    result.appendSlice(self.allocator, "\\n") catch return .null_value;
+                                    result.appendSlice(
+                                        self.allocator,
+                                        "\\n",
+                                    ) catch return .null_value;
                                 } else if (c == '\r') {
-                                    result.appendSlice(self.allocator, "\\r") catch return .null_value;
+                                    result.appendSlice(
+                                        self.allocator,
+                                        "\\r",
+                                    ) catch return .null_value;
                                 } else {
                                     result.append(self.allocator, c) catch return .null_value;
                                 }
@@ -11495,7 +12513,10 @@ pub const AggregateOp = struct {
                             result.append(self.allocator, '"') catch return .null_value;
                         },
                         .boolean => |vb| {
-                            result.appendSlice(self.allocator, if (vb) "true" else "false") catch return .null_value;
+                            result.appendSlice(
+                                self.allocator,
+                                if (vb) "true" else "false",
+                            ) catch return .null_value;
                         },
                         else => {
                             result.appendSlice(self.allocator, "null") catch return .null_value;
@@ -11545,7 +12566,8 @@ pub const AggregateOp = struct {
                             .text => |t| self.allocator.dupe(u8, t) catch return .null_value,
                             .integer => |n| blk: {
                                 var buf: [32]u8 = undefined;
-                                const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return .null_value;
+                                const s =
+                                    std.fmt.bufPrint(&buf, "{d}", .{n}) catch return .null_value;
                                 break :blk self.allocator.dupe(u8, s) catch return .null_value;
                             },
                             else => {
@@ -11565,7 +12587,12 @@ pub const AggregateOp = struct {
                 var should_free_sep = false;
                 if (agg.separator) |sep_expr| {
                     if (group.len > 0) {
-                        const sep_val = evalExpr(self.allocator, sep_expr, &group[0], null) catch return .null_value;
+                        const sep_val = evalExpr(
+                            self.allocator,
+                            sep_expr,
+                            &group[0],
+                            null,
+                        ) catch return .null_value;
                         defer sep_val.free(self.allocator);
                         switch (sep_val) {
                             .text => |t| {
@@ -11627,10 +12654,22 @@ pub const AggregateOp = struct {
                         .text => |t| {
                             for (t) |c| {
                                 switch (c) {
-                                    '"' => out.appendSlice(self.allocator, "\\\"") catch return .null_value,
-                                    '\\' => out.appendSlice(self.allocator, "\\\\") catch return .null_value,
-                                    '\n' => out.appendSlice(self.allocator, "\\n") catch return .null_value,
-                                    '\r' => out.appendSlice(self.allocator, "\\r") catch return .null_value,
+                                    '"' => out.appendSlice(
+                                        self.allocator,
+                                        "\\\"",
+                                    ) catch return .null_value,
+                                    '\\' => out.appendSlice(
+                                        self.allocator,
+                                        "\\\\",
+                                    ) catch return .null_value,
+                                    '\n' => out.appendSlice(
+                                        self.allocator,
+                                        "\\n",
+                                    ) catch return .null_value,
+                                    '\r' => out.appendSlice(
+                                        self.allocator,
+                                        "\\r",
+                                    ) catch return .null_value,
                                     else => out.append(self.allocator, c) catch return .null_value,
                                 }
                             }
@@ -11646,7 +12685,10 @@ pub const AggregateOp = struct {
                             out.appendSlice(self.allocator, s) catch return .null_value;
                         },
                         .boolean => |b| {
-                            out.appendSlice(self.allocator, if (b) "true" else "false") catch return .null_value;
+                            out.appendSlice(
+                                self.allocator,
+                                if (b) "true" else "false",
+                            ) catch return .null_value;
                         },
                         else => out.appendSlice(self.allocator, "null") catch return .null_value,
                     }
@@ -11669,19 +12711,37 @@ pub const AggregateOp = struct {
                             out.append(self.allocator, '"') catch return .null_value;
                             for (vt) |c| {
                                 switch (c) {
-                                    '"' => out.appendSlice(self.allocator, "\\\"") catch return .null_value,
-                                    '\\' => out.appendSlice(self.allocator, "\\\\") catch return .null_value,
-                                    '\n' => out.appendSlice(self.allocator, "\\n") catch return .null_value,
-                                    '\r' => out.appendSlice(self.allocator, "\\r") catch return .null_value,
+                                    '"' => out.appendSlice(
+                                        self.allocator,
+                                        "\\\"",
+                                    ) catch return .null_value,
+                                    '\\' => out.appendSlice(
+                                        self.allocator,
+                                        "\\\\",
+                                    ) catch return .null_value,
+                                    '\n' => out.appendSlice(
+                                        self.allocator,
+                                        "\\n",
+                                    ) catch return .null_value,
+                                    '\r' => out.appendSlice(
+                                        self.allocator,
+                                        "\\r",
+                                    ) catch return .null_value,
                                     else => out.append(self.allocator, c) catch return .null_value,
                                 }
                             }
                             out.append(self.allocator, '"') catch return .null_value;
                         },
                         .boolean => |vb| {
-                            out.appendSlice(self.allocator, if (vb) "true" else "false") catch return .null_value;
+                            out.appendSlice(
+                                self.allocator,
+                                if (vb) "true" else "false",
+                            ) catch return .null_value;
                         },
-                        .null_value => out.appendSlice(self.allocator, "null") catch return .null_value,
+                        .null_value => out.appendSlice(
+                            self.allocator,
+                            "null",
+                        ) catch return .null_value,
                         else => out.appendSlice(self.allocator, "null") catch return .null_value,
                     }
                 }
@@ -11692,7 +12752,8 @@ pub const AggregateOp = struct {
                 return .{ .text = text_copy };
             },
             .bool_and => {
-                // Return true if all non-NULL values are true, false if any is false, NULL if all NULL
+                // Return true if all non-NULL values are true, false if any is false, NULL if all
+                // NULL
                 var result: ?bool = null;
                 for (group) |*row_iter| {
                     // Check FILTER clause
@@ -11702,7 +12763,8 @@ pub const AggregateOp = struct {
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        const val =
+                            evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
                         if (val == .null_value) continue;
                         const b = switch (val) {
@@ -11731,7 +12793,8 @@ pub const AggregateOp = struct {
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        const val =
+                            evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
                         if (val == .null_value) continue;
                         const b = switch (val) {
@@ -11760,7 +12823,8 @@ pub const AggregateOp = struct {
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        const val =
+                            evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
                         if (val == .null_value) continue;
                         const n: i64 = switch (val) {
@@ -11788,7 +12852,8 @@ pub const AggregateOp = struct {
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        const val =
+                            evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
                         if (val == .null_value) continue;
                         const n: i64 = switch (val) {
@@ -11982,7 +13047,8 @@ pub const AggregateOp = struct {
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.arg) |arg_expr| {
-                        const val = evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
+                        const val =
+                            evalExpr(self.allocator, arg_expr, row_iter, null) catch continue;
                         defer val.free(self.allocator);
                         if (val == .null_value) continue;
                         const b = switch (val) {
@@ -12000,10 +13066,22 @@ pub const AggregateOp = struct {
                 if (result) |b| return .{ .integer = if (b) 1 else 0 };
                 return .null_value;
             },
-            // ──────────────────────────────────────────────────────────────────────
+            // ────────────────────────────
             // Regression aggregates: two-argument aggregates (Y, X)
-            // ──────────────────────────────────────────────────────────────────────
-            .corr, .covar_pop, .covar_samp, .regr_slope, .regr_intercept, .regr_r2, .regr_count, .regr_avgx, .regr_avgy, .regr_sxx, .regr_syy, .regr_sxy => {
+            // ────────────────────────────
+            .corr,
+            .covar_pop,
+            .covar_samp,
+            .regr_slope,
+            .regr_intercept,
+            .regr_r2,
+            .regr_count,
+            .regr_avgx,
+            .regr_avgy,
+            .regr_sxx,
+            .regr_syy,
+            .regr_sxy,
+            => {
                 // Two-pass algorithm for regression aggregates
                 // First pass: collect valid (Y, X) pairs and compute sums
                 var sum_x: f64 = 0;
@@ -12023,9 +13101,11 @@ pub const AggregateOp = struct {
                     }
                     if (agg.arg) |y_expr| {
                         if (agg.arg2) |x_expr| {
-                            const y_val = evalExpr(self.allocator, y_expr, row, null) catch continue;
+                            const y_val =
+                                evalExpr(self.allocator, y_expr, row, null) catch continue;
                             defer y_val.free(self.allocator);
-                            const x_val = evalExpr(self.allocator, x_expr, row, null) catch continue;
+                            const x_val =
+                                evalExpr(self.allocator, x_expr, row, null) catch continue;
                             defer x_val.free(self.allocator);
 
                             if (y_val.toReal()) |y| {
@@ -12110,7 +13190,8 @@ pub const AggregateOp = struct {
 
                 // Evaluate the fraction argument (should be constant but may be expression)
                 if (agg.arg == null) return .null_value;
-                const frac_val = evalExpr(self.allocator, agg.arg.?, &group[0], null) catch return .null_value;
+                const frac_val =
+                    evalExpr(self.allocator, agg.arg.?, &group[0], null) catch return .null_value;
                 defer frac_val.free(self.allocator);
 
                 const fraction = frac_val.toReal() orelse return .null_value;
@@ -12131,7 +13212,8 @@ pub const AggregateOp = struct {
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.order_exprs.len > 0) {
-                        const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
+                        const val =
+                            evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
                         if (val != .null_value) {
                             vals.append(self.allocator, val) catch {
                                 val.free(self.allocator);
@@ -12179,7 +13261,8 @@ pub const AggregateOp = struct {
                 if (group.len == 0 or agg.order_exprs.len == 0) return .null_value;
 
                 if (agg.arg == null) return .null_value;
-                const frac_val = evalExpr(self.allocator, agg.arg.?, &group[0], null) catch return .null_value;
+                const frac_val =
+                    evalExpr(self.allocator, agg.arg.?, &group[0], null) catch return .null_value;
                 defer frac_val.free(self.allocator);
 
                 const fraction = frac_val.toReal() orelse return .null_value;
@@ -12200,7 +13283,8 @@ pub const AggregateOp = struct {
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.order_exprs.len > 0) {
-                        const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
+                        const val =
+                            evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
                         if (val != .null_value) {
                             vals.append(self.allocator, val) catch {
                                 val.free(self.allocator);
@@ -12256,7 +13340,8 @@ pub const AggregateOp = struct {
                         if (fv != .boolean or !fv.boolean) continue;
                     }
                     if (agg.order_exprs.len > 0) {
-                        const val = evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
+                        const val =
+                            evalExpr(self.allocator, agg.order_exprs[0], row, null) catch continue;
                         if (val != .null_value) {
                             vals.append(self.allocator, val) catch {
                                 val.free(self.allocator);
@@ -12350,7 +13435,12 @@ pub const AggregateOp = struct {
     };
 };
 
-fn groupKeysEqual(allocator: Allocator, group_by: []const *const ast.Expr, a: *const Row, b: *const Row) bool {
+fn groupKeysEqual(
+    allocator: Allocator,
+    group_by: []const *const ast.Expr,
+    a: *const Row,
+    b: *const Row,
+) bool {
     for (group_by) |expr| {
         const av = evalExpr(allocator, expr, a, null) catch Value.null_value;
         defer av.free(allocator);
@@ -12441,7 +13531,7 @@ fn aggFuncName(func: AggFunc) []const u8 {
     };
 }
 
-// ── Nested Loop Join ────────────────────────────────────────────────────
+// ── Nested Loop Join ────────────────────────
 
 /// Nested loop join — iterates all combinations of left and right rows.
 pub const NestedLoopJoinOp = struct {
@@ -12520,7 +13610,8 @@ pub const NestedLoopJoinOp = struct {
             // Exhausted right side for current left row
             if (!self.left_matched and (self.join_type == .left or self.join_type == .full)) {
                 // Emit left row with NULLs for right columns
-                const result = try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
+                const result =
+                    try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
                 self.left_row.?.deinit();
                 self.left_row = null;
                 return result;
@@ -12568,7 +13659,8 @@ pub fn combineRows(allocator: Allocator, left: *const Row, right: *const Row) Ex
     }
     for (right.columns, 0..) |c, i| {
         cols[left.columns.len + i] = c;
-        vals[left.columns.len + i] = right.values[i].dupe(allocator) catch return ExecError.OutOfMemory;
+        vals[left.columns.len + i] = right.values[i].dupe(allocator) catch
+            return ExecError.OutOfMemory;
         inited += 1;
     }
 
@@ -12611,7 +13703,7 @@ fn leftOuterRow(allocator: Allocator, left: *const Row, right_sample: []const Ro
     };
 }
 
-// ── Hash Join Operator ──────────────────────────────────────────────────
+// ── Hash Join Operator ───────────────────────
 
 /// Join key information extracted from ON condition.
 const JoinKeys = struct {
@@ -12636,7 +13728,14 @@ fn extractJoinKeys(
     errdefer right_list.deinit(allocator);
 
     // Recursive helper to extract equality predicates
-    extractEqualities(cond, left_row, right_row, &left_list, &right_list, allocator) catch return null;
+    extractEqualities(
+        cond,
+        left_row,
+        right_row,
+        &left_list,
+        &right_list,
+        allocator,
+    ) catch return null;
 
     if (left_list.items.len == 0) return null;
 
@@ -12683,8 +13782,22 @@ fn extractEqualities(
                 }
             } else if (binop.op == .@"and") {
                 // Recursively process AND branches
-                try extractEqualities(binop.left, left_row, right_row, left_list, right_list, allocator);
-                try extractEqualities(binop.right, left_row, right_row, left_list, right_list, allocator);
+                try extractEqualities(
+                    binop.left,
+                    left_row,
+                    right_row,
+                    left_list,
+                    right_list,
+                    allocator,
+                );
+                try extractEqualities(
+                    binop.right,
+                    left_row,
+                    right_row,
+                    left_list,
+                    right_list,
+                    allocator,
+                );
             }
         },
         else => {}, // Ignore non-binary-op expressions
@@ -12707,7 +13820,8 @@ fn findColumnIndex(row: *const Row, name: ast.Name) ?usize {
     // If name has a prefix, try to match "prefix.name" first
     if (name.prefix) |prefix| {
         var buf: [256]u8 = undefined;
-        const qualified = std.fmt.bufPrint(&buf, "{s}.{s}", .{ prefix, name.name }) catch return null;
+        const qualified =
+            std.fmt.bufPrint(&buf, "{s}.{s}", .{ prefix, name.name }) catch return null;
         for (row.columns, 0..) |col, i| {
             if (std.ascii.eqlIgnoreCase(col, qualified)) return i;
         }
@@ -12765,7 +13879,10 @@ pub const HashJoinOp = struct {
             if (!gop.found_existing) {
                 gop.value_ptr.* = .{};
             }
-            gop.value_ptr.append(self.allocator, self.all_right_rows.items[row_index]) catch return ExecError.OutOfMemory;
+            gop.value_ptr.append(
+                self.allocator,
+                self.all_right_rows.items[row_index],
+            ) catch return ExecError.OutOfMemory;
         }
 
         self.hash_table_built = true;
@@ -12851,11 +13968,15 @@ pub const HashJoinOp = struct {
                         // Rebuild with correct join key hashing
                         for (self.all_right_rows.items) |*row| {
                             const hash = self.hashRowWithKeys(row, true);
-                            const gop = self.hash_table.getOrPut(hash) catch return ExecError.OutOfMemory;
+                            const gop =
+                                self.hash_table.getOrPut(hash) catch return ExecError.OutOfMemory;
                             if (!gop.found_existing) {
                                 gop.value_ptr.* = .{};
                             }
-                            gop.value_ptr.append(self.allocator, row.*) catch return ExecError.OutOfMemory;
+                            gop.value_ptr.append(
+                                self.allocator,
+                                row.*,
+                            ) catch return ExecError.OutOfMemory;
                         }
                     }
 
@@ -12893,7 +14014,11 @@ pub const HashJoinOp = struct {
 
                 // Exhausted matches for this left row
                 if (!self.left_matched and (self.join_type == .left or self.join_type == .full)) {
-                    const result = try leftOuterRow(self.allocator, &self.left_row.?, self.all_right_rows.items);
+                    const result = try leftOuterRow(
+                        self.allocator,
+                        &self.left_row.?,
+                        self.all_right_rows.items,
+                    );
                     self.left_row.?.deinit();
                     self.left_row = null;
                     self.current_matches = null;
@@ -12953,7 +14078,7 @@ pub const HashJoinOp = struct {
     }
 };
 
-// ── Merge Join Operator ─────────────────────────────────────────────────
+// ── Merge Join Operator ───────────────────────
 
 /// Merge join: assumes both sides are sorted by join key.
 pub const MergeJoinOp = struct {
@@ -13007,7 +14132,9 @@ pub const MergeJoinOp = struct {
 
         while (true) {
             // Emit duplicates for current left row
-            if (self.right_duplicates.items.len > 0 and self.duplicate_index < self.right_duplicates.items.len) {
+            if (self.right_duplicates.items.len > 0 and
+                self.duplicate_index < self.right_duplicates.items.len)
+            {
                 const right_row = self.right_duplicates.items[self.duplicate_index];
                 self.duplicate_index += 1;
 
@@ -13037,7 +14164,8 @@ pub const MergeJoinOp = struct {
                 self.duplicate_index = 0;
 
                 if (!had_match and (self.join_type == .left or self.join_type == .full)) {
-                    const result = try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
+                    const result =
+                        try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
                     self.left_row.?.deinit();
                     self.left_row = null;
                     self.left_matched = false;
@@ -13062,7 +14190,8 @@ pub const MergeJoinOp = struct {
             if (self.right_index >= self.right_rows.items.len) {
                 // Exhausted right side for this left row
                 if (!self.left_matched and (self.join_type == .left or self.join_type == .full)) {
-                    const result = try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
+                    const result =
+                        try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
                     self.left_row.?.deinit();
                     self.left_row = null;
                     return result;
@@ -13074,12 +14203,14 @@ pub const MergeJoinOp = struct {
 
             // Compare join keys
             const right_row = &self.right_rows.items[self.right_index];
-            const ord = compareJoinKeys(&self.left_row.?, right_row, self.on_condition orelse unreachable);
+            const ord =
+                compareJoinKeys(&self.left_row.?, right_row, self.on_condition orelse unreachable);
 
             if (ord == .lt) {
                 // Left < Right: advance left (possibly emit left outer)
                 if (!self.left_matched and (self.join_type == .left or self.join_type == .full)) {
-                    const result = try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
+                    const result =
+                        try leftOuterRow(self.allocator, &self.left_row.?, self.right_rows.items);
                     self.left_row.?.deinit();
                     self.left_row = null;
                     return result;
@@ -13091,15 +14222,25 @@ pub const MergeJoinOp = struct {
                 self.right_index += 1;
             } else {
                 // Left == Right: collect all matching right rows (pointers into right_rows)
-                self.right_duplicates.append(self.allocator, right_row) catch return ExecError.OutOfMemory;
+                self.right_duplicates.append(
+                    self.allocator,
+                    right_row,
+                ) catch return ExecError.OutOfMemory;
                 self.right_index += 1;
 
                 // Collect ALL consecutive matching right rows
                 while (self.right_index < self.right_rows.items.len) {
                     const next_right = &self.right_rows.items[self.right_index];
-                    const next_ord = compareJoinKeys(&self.left_row.?, next_right, self.on_condition orelse unreachable);
+                    const next_ord = compareJoinKeys(
+                        &self.left_row.?,
+                        next_right,
+                        self.on_condition orelse unreachable,
+                    );
                     if (next_ord == .eq) {
-                        self.right_duplicates.append(self.allocator, next_right) catch return ExecError.OutOfMemory;
+                        self.right_duplicates.append(
+                            self.allocator,
+                            next_right,
+                        ) catch return ExecError.OutOfMemory;
                         self.right_index += 1;
                     } else {
                         break;
@@ -13133,7 +14274,7 @@ pub const MergeJoinOp = struct {
     }
 };
 
-// ── Values Operator ─────────────────────────────────────────────────────
+// ── Values Operator ────────────────────────
 
 /// Produces literal rows from INSERT VALUES.
 pub const ValuesOp = struct {
@@ -13142,7 +14283,11 @@ pub const ValuesOp = struct {
     rows: []const []const *const ast.Expr,
     index: usize = 0,
 
-    pub fn init(allocator: Allocator, col_names: []const []const u8, rows: []const []const *const ast.Expr) ValuesOp {
+    pub fn init(
+        allocator: Allocator,
+        col_names: []const []const u8,
+        rows: []const []const *const ast.Expr,
+    ) ValuesOp {
         return .{
             .allocator = allocator,
             .col_names = col_names,
@@ -13184,7 +14329,8 @@ pub const ValuesOp = struct {
             inited += 1;
         }
 
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        const cols =
+            self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
         for (self.col_names, 0..) |c, i| cols[i] = c;
 
         return Row{
@@ -13207,7 +14353,7 @@ pub const ValuesOp = struct {
     }
 };
 
-// ── Empty Operator ──────────────────────────────────────────────────────
+// ── Empty Operator ─────────────────────────
 
 /// Produces no rows (used for DDL results).
 /// Produces exactly one row with no columns (like Oracle's DUAL table).
@@ -13255,7 +14401,7 @@ pub const EmptyOp = struct {
     }
 };
 
-// ── Materialized Operator ────────────────────────────────────────────────
+// ── Materialized Operator ──────────────────────
 
 /// Serves pre-materialized rows (used for view expansion).
 pub const MaterializedOp = struct {
@@ -13264,7 +14410,11 @@ pub const MaterializedOp = struct {
     rows: []const []Value,
     index: usize = 0,
 
-    pub fn init(allocator: Allocator, col_names: []const []const u8, rows: []const []Value) MaterializedOp {
+    pub fn init(
+        allocator: Allocator,
+        col_names: []const []const u8,
+        rows: []const []Value,
+    ) MaterializedOp {
         return .{
             .allocator = allocator,
             .col_names = col_names,
@@ -13279,7 +14429,8 @@ pub const MaterializedOp = struct {
         self.index += 1;
 
         // Duplicate values for the returned row (Row.deinit will free them)
-        const vals = self.allocator.alloc(Value, source_vals.len) catch return ExecError.OutOfMemory;
+        const vals =
+            self.allocator.alloc(Value, source_vals.len) catch return ExecError.OutOfMemory;
         var inited: usize = 0;
         errdefer {
             for (vals[0..inited]) |v| v.free(self.allocator);
@@ -13290,7 +14441,8 @@ pub const MaterializedOp = struct {
             inited += 1;
         }
 
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        const cols =
+            self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
         for (self.col_names, 0..) |c, i| cols[i] = c;
 
         return Row{
@@ -13321,7 +14473,7 @@ pub const MaterializedOp = struct {
     }
 };
 
-// ── Distinct Operator ────────────────────────────────────────────────────
+// ── Distinct Operator ────────────────────────
 
 /// Eliminates duplicate rows from input.
 /// - Plain DISTINCT: hashes all column values, emits each unique row once.
@@ -13338,7 +14490,11 @@ pub const DistinctOp = struct {
     /// Track all allocated keys for cleanup.
     allocated_keys: std.ArrayListUnmanaged([]u8) = .{},
 
-    pub fn init(allocator: Allocator, input: RowIterator, on_exprs: []const *const ast.Expr) DistinctOp {
+    pub fn init(
+        allocator: Allocator,
+        input: RowIterator,
+        on_exprs: []const *const ast.Expr,
+    ) DistinctOp {
         return .{
             .allocator = allocator,
             .input = input,
@@ -13412,7 +14568,7 @@ pub const DistinctOp = struct {
     }
 };
 
-// ── Set Operation Operator ───────────────────────────────────────────────
+// ── Set Operation Operator ──────────────────────
 
 /// Executes UNION, UNION ALL, INTERSECT, EXCEPT between two row iterators.
 /// For UNION/INTERSECT/EXCEPT, uses a hash set of serialized rows for dedup.
@@ -13432,7 +14588,12 @@ pub const SetOpOp = struct {
     allocated_keys: std.ArrayListUnmanaged([]u8) = .{},
     initialized: bool = false,
 
-    pub fn init(allocator: Allocator, left: RowIterator, right: RowIterator, op: ast.SetOpType) SetOpOp {
+    pub fn init(
+        allocator: Allocator,
+        left: RowIterator,
+        right: RowIterator,
+        op: ast.SetOpType,
+    ) SetOpOp {
         return .{
             .allocator = allocator,
             .left = left,
@@ -13625,7 +14786,7 @@ pub const SetOpOp = struct {
     }
 };
 
-// ── Execution Result ────────────────────────────────────────────────────
+// ── Execution Result ────────────────────────
 
 /// Result of executing a SQL statement.
 pub const ExecResult = struct {
@@ -13637,7 +14798,7 @@ pub const ExecResult = struct {
     message: []const u8 = "",
 };
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 test "Value compare" {
     const a = Value{ .integer = 42 };
@@ -13778,7 +14939,10 @@ test "evalExpr column reference" {
     try std.testing.expectEqual(@as(i64, 1), v.integer);
 
     const bad_ref = ast.Expr{ .column_ref = .{ .name = "nonexistent" } };
-    try std.testing.expectError(EvalError.ColumnNotFound, evalExpr(allocator, &bad_ref, &row, null));
+    try std.testing.expectError(
+        EvalError.ColumnNotFound,
+        evalExpr(allocator, &bad_ref, &row, null),
+    );
 }
 
 test "evalExpr binary arithmetic" {
@@ -13805,7 +14969,10 @@ test "evalExpr binary arithmetic" {
 
     const zero = ast.Expr{ .integer_literal = 0 };
     const div_zero = ast.Expr{ .binary_op = .{ .op = .divide, .left = &left, .right = &zero } };
-    try std.testing.expectError(EvalError.DivisionByZero, evalExpr(allocator, &div_zero, &empty_row, null));
+    try std.testing.expectError(
+        EvalError.DivisionByZero,
+        evalExpr(allocator, &div_zero, &empty_row, null),
+    );
 }
 
 test "evalExpr comparison" {
@@ -14113,7 +15280,8 @@ test "FilterOp filters rows" {
     // Filter: id > 1
     const id_ref = ast.Expr{ .column_ref = .{ .name = "id" } };
     const one = ast.Expr{ .integer_literal = 1 };
-    const predicate = ast.Expr{ .binary_op = .{ .op = .greater_than, .left = &id_ref, .right = &one } };
+    const predicate =
+        ast.Expr{ .binary_op = .{ .op = .greater_than, .left = &id_ref, .right = &one } };
 
     var filter = FilterOp.init(allocator, data.iterator(), &predicate);
     defer filter.close();
@@ -14407,7 +15575,7 @@ test "NestedLoopJoinOp inner join" {
     try std.testing.expectEqual(@as(?Row, null), try join.next());
 }
 
-// ── Hash Join Tests ────────────────────────────────────────────────────────
+// ── Hash Join Tests ────────────────────────
 
 test "HashJoinOp inner join with equijoin predicate" {
     const allocator = std.testing.allocator;
@@ -14572,7 +15740,7 @@ test "HashJoinOp empty build side returns no rows" {
     try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
 }
 
-// ── Merge Join Tests ───────────────────────────────────────────────────────
+// ── Merge Join Tests ────────────────────────
 
 test "MergeJoinOp inner join with sorted inputs" {
     const allocator = std.testing.allocator;
@@ -14596,7 +15764,8 @@ test "MergeJoinOp inner join with sorted inputs" {
     const right_ref = ast.Expr{ .column_ref = .{ .name = "user_id", .prefix = "orders" } };
     const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
 
-    var merge_join = MergeJoinOp.init(allocator, users.iterator(), orders.iterator(), .inner, &cond);
+    var merge_join =
+        MergeJoinOp.init(allocator, users.iterator(), orders.iterator(), .inner, &cond);
     defer merge_join.close();
 
     // Expect 3 matching rows
@@ -14745,7 +15914,7 @@ test "MergeJoinOp empty left side returns no rows" {
     try std.testing.expectEqual(@as(?Row, null), try merge_join.next());
 }
 
-// ── Comprehensive Edge Case Tests for Join Operators ───────────────────
+// ── Comprehensive Edge Case Tests for Join Operators ─────────────
 
 test "HashJoinOp NULL join keys never match (SQL standard)" {
     const allocator = std.testing.allocator;
@@ -15041,7 +16210,8 @@ test "evalExpr CASE expression" {
     const when_clauses = [_]ast.WhenClause{
         .{ .condition = &when_cond, .result = &then_val },
     };
-    const case_expr = ast.Expr{ .case_expr = .{ .when_clauses = &when_clauses, .else_expr = &else_val } };
+    const case_expr =
+        ast.Expr{ .case_expr = .{ .when_clauses = &when_clauses, .else_expr = &else_val } };
     const v = try evalExpr(allocator, &case_expr, &empty_row, null);
     defer v.free(allocator);
     try std.testing.expectEqual(@as(i64, 1), v.integer);
@@ -15154,7 +16324,7 @@ test "evalExpr CAST to JSON/JSONB" {
     }
 }
 
-// ── Test Helper: In-Memory Row Source ───────────────────────────────────
+// ── Test Helper: In-Memory Row Source ──────────────────
 
 /// A simple in-memory row source for testing operators without storage.
 const InMemorySource = struct {
@@ -15204,7 +16374,8 @@ const InMemorySource = struct {
             inited += 1;
         }
 
-        const cols = self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
+        const cols =
+            self.allocator.alloc([]const u8, self.col_names.len) catch return ExecError.OutOfMemory;
         for (self.col_names, 0..) |c, i| cols[i] = c;
 
         return Row{
@@ -15227,7 +16398,7 @@ const InMemorySource = struct {
     }
 };
 
-// ── MaterializedOp Tests ────────────────────────────────────────────────
+// ── MaterializedOp Tests ───────────────────────
 
 test "MaterializedOp with multiple rows" {
     const allocator = std.testing.allocator;
@@ -15357,7 +16528,7 @@ test "MaterializedOp with text values duplicates correctly" {
     op.close();
 }
 
-// ── SetOpOp Unit Tests ───────────────────────────────────────────────
+// ── SetOpOp Unit Tests ───────────────────────
 
 test "SetOpOp UNION ALL concatenates both sides" {
     const allocator = std.testing.allocator;
@@ -15647,17 +16818,29 @@ test "DistinctOp with mixed types" {
     try std.testing.expectEqual(@as(usize, 3), count);
 }
 
-// ── DISTINCT ON Unit Tests ──────────────────────────────────────────────
+// ── DISTINCT ON Unit Tests ──────────────────────
 
 test "DistinctOp with DISTINCT ON single column keeps first row per group" {
     const allocator = std.testing.allocator;
 
     // Rows: (dept, name, salary) — sorted by dept
     var data = InMemorySource.init(allocator, &.{ "dept", "name", "salary" });
-    try data.addRow(&.{ Value{ .text = "eng" }, Value{ .text = "Alice" }, Value{ .integer = 100 } });
+    try data.addRow(&.{
+        Value{ .text = "eng" },
+        Value{ .text = "Alice" },
+        Value{ .integer = 100 },
+    });
     try data.addRow(&.{ Value{ .text = "eng" }, Value{ .text = "Bob" }, Value{ .integer = 90 } });
-    try data.addRow(&.{ Value{ .text = "sales" }, Value{ .text = "Carol" }, Value{ .integer = 80 } });
-    try data.addRow(&.{ Value{ .text = "sales" }, Value{ .text = "Dave" }, Value{ .integer = 70 } });
+    try data.addRow(&.{
+        Value{ .text = "sales" },
+        Value{ .text = "Carol" },
+        Value{ .integer = 80 },
+    });
+    try data.addRow(&.{
+        Value{ .text = "sales" },
+        Value{ .text = "Dave" },
+        Value{ .integer = 70 },
+    });
     defer data.deinit();
 
     // DISTINCT ON (dept) — column_ref for "dept"
@@ -15685,7 +16868,8 @@ test "DistinctOp with DISTINCT ON multiple columns" {
     // Rows: (a, b, c) — sorted by a, b
     var data = InMemorySource.init(allocator, &.{ "a", "b", "c" });
     try data.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 10 }, Value{ .text = "x" } });
-    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 10 }, Value{ .text = "y" } }); // same (a,b)
+    // same (a,b)
+    try data.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 10 }, Value{ .text = "y" } });
     try data.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 20 }, Value{ .text = "z" } });
     try data.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 10 }, Value{ .text = "w" } });
     defer data.deinit();
@@ -15755,7 +16939,7 @@ test "DistinctOp with DISTINCT ON empty input" {
     try std.testing.expect(try op.next() == null);
 }
 
-// ── SetOpOp NULL Handling Tests ─────────────────────────────────────────
+// ── SetOpOp NULL Handling Tests ────────────────────
 
 test "SetOpOp UNION ALL with NULL values in multi-column rows" {
     const allocator = std.testing.allocator;
@@ -15890,7 +17074,7 @@ test "SetOpOp UNION with multi-column NULL combinations" {
     try std.testing.expectEqual(@as(usize, 3), count);
 }
 
-// ── Row Utility Tests ───────────────────────────────────────────────────
+// ── Row Utility Tests ────────────────────────
 
 test "Row.clone creates independent deep copy" {
     const allocator = std.testing.allocator;
@@ -16058,7 +17242,8 @@ test "Time parsing and formatting" {
     // Test with fractional seconds
     const with_frac = parseTimeString("12:34:56.123456");
     try std.testing.expect(with_frac != null);
-    const expected = 12 * MICROS_PER_HOUR + 34 * MICROS_PER_MINUTE + 56 * MICROS_PER_SECOND + 123456;
+    const expected =
+        12 * MICROS_PER_HOUR + 34 * MICROS_PER_MINUTE + 56 * MICROS_PER_SECOND + 123456;
     try std.testing.expectEqual(expected, with_frac.?);
 }
 
@@ -16137,7 +17322,10 @@ test "Serialize and deserialize temporal types" {
 
     try std.testing.expectEqual(@as(usize, 3), deserialized.len);
     try std.testing.expectEqual(Value{ .date = 19800 }, deserialized[0]);
-    try std.testing.expectEqual(Value{ .time = 14 * MICROS_PER_HOUR + 30 * MICROS_PER_MINUTE }, deserialized[1]);
+    try std.testing.expectEqual(
+        Value{ .time = 14 * MICROS_PER_HOUR + 30 * MICROS_PER_MINUTE },
+        deserialized[1],
+    );
     try std.testing.expectEqual(Value{ .timestamp = 1710508245000000 }, deserialized[2]);
 }
 
@@ -16164,7 +17352,7 @@ test "Value comparison with temporal types" {
     try std.testing.expectEqual(std.math.Order.eq, date.compare(ts));
 }
 
-// ── NUMERIC Unit Tests ──────────────────────────────────────────────────
+// ── NUMERIC Unit Tests ───────────────────────
 
 test "parseNumericString basic" {
     // Integer-like
@@ -16600,19 +17788,28 @@ test "evalFunctionCall NULLIF edge cases" {
     // NULLIF with wrong arity (0 args) → TypeError
     const args_zero = [_]*const ast.Expr{};
     const fc_zero = .{ .name = "nullif", .args = &args_zero, .distinct = false };
-    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_zero, &empty_row, null));
+    try std.testing.expectError(
+        EvalError.TypeError,
+        evalFunctionCall(allocator, fc_zero, &empty_row, null),
+    );
 
     // NULLIF with wrong arity (1 arg) → TypeError
     const args_one = [_]*const ast.Expr{&one};
     const fc_one = .{ .name = "nullif", .args = &args_one, .distinct = false };
-    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_one, &empty_row, null));
+    try std.testing.expectError(
+        EvalError.TypeError,
+        evalFunctionCall(allocator, fc_one, &empty_row, null),
+    );
 
     // NULLIF with wrong arity (3 args) → TypeError
     const two = ast.Expr{ .integer_literal = 2 };
     const three = ast.Expr{ .integer_literal = 3 };
     const args_three = [_]*const ast.Expr{ &one, &two, &three };
     const fc_three = .{ .name = "nullif", .args = &args_three, .distinct = false };
-    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_three, &empty_row, null));
+    try std.testing.expectError(
+        EvalError.TypeError,
+        evalFunctionCall(allocator, fc_three, &empty_row, null),
+    );
 }
 
 test "evalFunctionCall GREATEST edge cases" {
@@ -16631,7 +17828,10 @@ test "evalFunctionCall GREATEST edge cases" {
     // GREATEST() → TypeError (zero arguments)
     const args_zero = [_]*const ast.Expr{};
     const fc_zero = .{ .name = "greatest", .args = &args_zero, .distinct = false };
-    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_zero, &empty_row, null));
+    try std.testing.expectError(
+        EvalError.TypeError,
+        evalFunctionCall(allocator, fc_zero, &empty_row, null),
+    );
 
     // GREATEST with real values
     const real_a = ast.Expr{ .float_literal = 1.5 };
@@ -16702,7 +17902,10 @@ test "evalFunctionCall LEAST edge cases" {
     // LEAST() → TypeError (zero arguments)
     const args_zero = [_]*const ast.Expr{};
     const fc_zero = .{ .name = "least", .args = &args_zero, .distinct = false };
-    try std.testing.expectError(EvalError.TypeError, evalFunctionCall(allocator, fc_zero, &empty_row, null));
+    try std.testing.expectError(
+        EvalError.TypeError,
+        evalFunctionCall(allocator, fc_zero, &empty_row, null),
+    );
 
     // LEAST with real values
     const real_a = ast.Expr{ .float_literal = 1.5 };
@@ -16823,14 +18026,16 @@ test "Numeric CAST from integer" {
 
 test "Numeric CAST to text" {
     const allocator = std.testing.allocator;
-    const result = try evalCast(allocator, Value{ .numeric = .{ .value = 12345, .scale = 2 } }, .type_text);
+    const result =
+        try evalCast(allocator, Value{ .numeric = .{ .value = 12345, .scale = 2 } }, .type_text);
     defer result.free(allocator);
     try std.testing.expectEqualStrings("123.45", result.text);
 }
 
 test "Numeric CAST to integer (truncates)" {
     const allocator = std.testing.allocator;
-    const result = try evalCast(allocator, Value{ .numeric = .{ .value = 12345, .scale = 2 } }, .type_integer);
+    const result =
+        try evalCast(allocator, Value{ .numeric = .{ .value = 12345, .scale = 2 } }, .type_integer);
     try std.testing.expectEqual(@as(i64, 123), result.integer);
 }
 
@@ -16842,7 +18047,7 @@ test "powI128" {
     try std.testing.expectEqual(@as(i128, 1000000), powI128(10, 6));
 }
 
-// ── UUID Unit Tests ──────────────────────────────────────────────────────
+// ── UUID Unit Tests ────────────────────────
 
 test "UUID parseUuidString with dashes" {
     const result = parseUuidString("550e8400-e29b-41d4-a716-446655440000");
@@ -16879,7 +18084,8 @@ test "UUID parseUuidString uppercase" {
 test "UUID parseUuidString invalid" {
     try std.testing.expect(parseUuidString("not-a-uuid") == null);
     try std.testing.expect(parseUuidString("550e8400-e29b-41d4-a716") == null); // too short
-    try std.testing.expect(parseUuidString("zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz") == null); // invalid hex
+    // invalid hex
+    try std.testing.expect(parseUuidString("zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz") == null);
 }
 
 test "UUID formatUuid roundtrip" {
@@ -16924,7 +18130,7 @@ test "UUID isTruthy" {
     try std.testing.expect(v.isTruthy());
 }
 
-// ── ARRAY Unit Tests ──────────────────────────────────────────────────────
+// ── ARRAY Unit Tests ────────────────────────
 
 test "ARRAY serialization roundtrip simple integers" {
     const allocator = std.testing.allocator;
@@ -17745,7 +18951,7 @@ test "evalExpr ALL with empty array returns true" {
     try std.testing.expect(result.boolean); // Empty array → true for ALL (vacuous truth)
 }
 
-// ── JSON Operator Tests ──────────────────────────────────────────────
+// ── JSON Operator Tests ───────────────────────
 
 test "JSON extract -> operator" {
     const allocator = std.testing.allocator;
@@ -18109,7 +19315,8 @@ test "JSON delete path #- operator" {
     // Parse result to verify "b" was deleted
     var parse_arena = std.heap.ArenaAllocator.init(allocator);
     defer parse_arena.deinit();
-    const parsed = try std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), result.text, .{});
+    const parsed =
+        try std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), result.text, .{});
     const obj = parsed.value.object;
     try std.testing.expect(!obj.contains("b"));
     try std.testing.expect(obj.contains("a"));
@@ -18188,7 +19395,8 @@ test "JSON extract nested object returns JSON" {
     // Verify it's valid JSON
     var parse_arena = std.heap.ArenaAllocator.init(allocator);
     defer parse_arena.deinit();
-    const parsed = try std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), result.text, .{});
+    const parsed =
+        try std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), result.text, .{});
     const obj = parsed.value.object;
     try std.testing.expect(obj.contains("name"));
     try std.testing.expect(obj.contains("age"));
@@ -18492,7 +19700,8 @@ test "to_tsquery: basic query" {
     const result = try textToTsquery(allocator, "search query");
     defer allocator.free(result);
 
-    // Should be lowercased, stemmed ("query" → "queri"), and joined with & (preserves input order)
+    // Should be lowercased, stemmed ("query" → "queri"), and joined with & (preserves input
+    // order)
     try std.testing.expectEqualStrings("search & queri", result);
 }
 
@@ -19378,8 +20587,16 @@ test "extractJoinKeys handles mixed qualified and unqualified column names" {
 
     // Left table: employees (id, dept_id, name)
     var employees = InMemorySource.init(allocator, &.{ "id", "dept_id", "name" });
-    try employees.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 10 }, Value{ .text = "Alice" } });
-    try employees.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 20 }, Value{ .text = "Bob" } });
+    try employees.addRow(&.{
+        Value{ .integer = 1 },
+        Value{ .integer = 10 },
+        Value{ .text = "Alice" },
+    });
+    try employees.addRow(&.{
+        Value{ .integer = 2 },
+        Value{ .integer = 20 },
+        Value{ .text = "Bob" },
+    });
     defer employees.deinit();
 
     // Right table: departments (dept_id, dept_name)
@@ -19394,7 +20611,8 @@ test "extractJoinKeys handles mixed qualified and unqualified column names" {
     const right_ref = ast.Expr{ .column_ref = .{ .name = "dept_id", .prefix = "departments" } };
     const cond = ast.Expr{ .binary_op = .{ .op = .equal, .left = &left_ref, .right = &right_ref } };
 
-    var hash_join = HashJoinOp.init(allocator, employees.iterator(), departments.iterator(), .inner, &cond);
+    var hash_join =
+        HashJoinOp.init(allocator, employees.iterator(), departments.iterator(), .inner, &cond);
     defer hash_join.close();
 
     // Should match: (1, 10, Alice, 10, Engineering) and (2, 20, Bob, 20, Sales)
@@ -19422,29 +20640,57 @@ test "extractJoinKeys handles multiple qualified columns in AND condition" {
 
     // Left table: orders (order_id, customer_id, product_id)
     var orders = InMemorySource.init(allocator, &.{ "order_id", "customer_id", "product_id" });
-    try orders.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 }, Value{ .integer = 500 } });
-    try orders.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 101 }, Value{ .integer = 501 } });
+    try orders.addRow(&.{
+        Value{ .integer = 1 },
+        Value{ .integer = 100 },
+        Value{ .integer = 500 },
+    });
+    try orders.addRow(&.{
+        Value{ .integer = 2 },
+        Value{ .integer = 101 },
+        Value{ .integer = 501 },
+    });
     defer orders.deinit();
 
     // Right table: shipments (order_id, customer_id, status)
     var shipments = InMemorySource.init(allocator, &.{ "order_id", "customer_id", "status" });
-    try shipments.addRow(&.{ Value{ .integer = 1 }, Value{ .integer = 100 }, Value{ .text = "shipped" } });
-    try shipments.addRow(&.{ Value{ .integer = 2 }, Value{ .integer = 999 }, Value{ .text = "pending" } });
+    try shipments.addRow(&.{
+        Value{ .integer = 1 },
+        Value{ .integer = 100 },
+        Value{ .text = "shipped" },
+    });
+    try shipments.addRow(&.{
+        Value{ .integer = 2 },
+        Value{ .integer = 999 },
+        Value{ .text = "pending" },
+    });
     defer shipments.deinit();
 
     // ON orders.order_id = shipments.order_id AND orders.customer_id = shipments.customer_id
     // Both column names are ambiguous (exist in both tables)
     const order_id_left = ast.Expr{ .column_ref = .{ .name = "order_id", .prefix = "orders" } };
     const order_id_right = ast.Expr{ .column_ref = .{ .name = "order_id", .prefix = "shipments" } };
-    const order_id_eq = ast.Expr{ .binary_op = .{ .op = .equal, .left = &order_id_left, .right = &order_id_right } };
+    const order_id_eq = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &order_id_left,
+        .right = &order_id_right,
+    } };
 
-    const customer_id_left = ast.Expr{ .column_ref = .{ .name = "customer_id", .prefix = "orders" } };
-    const customer_id_right = ast.Expr{ .column_ref = .{ .name = "customer_id", .prefix = "shipments" } };
-    const customer_id_eq = ast.Expr{ .binary_op = .{ .op = .equal, .left = &customer_id_left, .right = &customer_id_right } };
+    const customer_id_left =
+        ast.Expr{ .column_ref = .{ .name = "customer_id", .prefix = "orders" } };
+    const customer_id_right =
+        ast.Expr{ .column_ref = .{ .name = "customer_id", .prefix = "shipments" } };
+    const customer_id_eq = ast.Expr{ .binary_op = .{
+        .op = .equal,
+        .left = &customer_id_left,
+        .right = &customer_id_right,
+    } };
 
-    const and_cond = ast.Expr{ .binary_op = .{ .op = .@"and", .left = &order_id_eq, .right = &customer_id_eq } };
+    const and_cond =
+        ast.Expr{ .binary_op = .{ .op = .@"and", .left = &order_id_eq, .right = &customer_id_eq } };
 
-    var hash_join = HashJoinOp.init(allocator, orders.iterator(), shipments.iterator(), .inner, &and_cond);
+    var hash_join =
+        HashJoinOp.init(allocator, orders.iterator(), shipments.iterator(), .inner, &and_cond);
     defer hash_join.close();
 
     // Should match only order 1 (both order_id AND customer_id match)
@@ -19462,7 +20708,7 @@ test "extractJoinKeys handles multiple qualified columns in AND condition" {
     try std.testing.expectEqual(@as(?Row, null), try hash_join.next());
 }
 
-// ── pg_stat_activity (monitoring view) tests ──────────────────────────────────
+// ── pg_stat_activity (monitoring view) tests ────────────────
 
 /// ActivityInfo stores runtime state for a single active connection.
 pub const ActivityInfo = struct {
@@ -19625,7 +20871,8 @@ pub const StatActivityScanOp = struct {
         const activity = activities[self.current_index];
         self.current_index += 1;
 
-        // Build row with 8 columns: pid, usename, application_name, client_addr, query, state, query_start, state_change
+        // Build row with 8 columns: pid, usename, application_name, client_addr, query, state,
+        // query_start, state_change
         var row_values = try self.allocator.alloc(Value, 8);
 
         row_values[0] = .{ .integer = @intCast(activity.pid) };
@@ -19674,7 +20921,7 @@ pub const StatActivityScanOp = struct {
     }
 };
 
-// ── pg_locks Monitoring View ───────────────────────────────────────────
+// ── pg_locks Monitoring View ─────────────────────
 
 /// Lock information for pg_locks system view.
 pub const LockInfo = struct {
@@ -19827,7 +21074,7 @@ pub const LocksScanOp = struct {
     }
 };
 
-// ── Configuration System Operators ─────────────────────────────────────
+// ── Configuration System Operators ───────────────────
 
 const config_mod = @import("../config/manager.zig");
 const ConfigManager = config_mod.ConfigManager;
@@ -20023,7 +21270,16 @@ test "ActivityTracker tracks multiple connections" {
     const now = std.time.microTimestamp();
     try tracker.updateActivity(1001, "alice", "app1", "192.168.1.1", null, "idle", null, now);
     try tracker.updateActivity(1002, "bob", "app2", "192.168.1.2", null, "idle", null, now);
-    try tracker.updateActivity(1003, "charlie", "app3", "192.168.1.3", "SELECT 1", "active", now, now);
+    try tracker.updateActivity(
+        1003,
+        "charlie",
+        "app3",
+        "192.168.1.3",
+        "SELECT 1",
+        "active",
+        now,
+        now,
+    );
 
     try std.testing.expectEqual(@as(usize, 3), tracker.getAllActivities().len);
 }
@@ -20035,7 +21291,16 @@ test "ActivityTracker updates existing activity by PID" {
 
     const now = std.time.microTimestamp();
     try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", null, "idle", null, now);
-    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", "SELECT * FROM users", "active", now, now);
+    try tracker.updateActivity(
+        1001,
+        "postgres",
+        "psql",
+        "127.0.0.1",
+        "SELECT * FROM users",
+        "active",
+        now,
+        now,
+    );
 
     const activities = tracker.getAllActivities();
     try std.testing.expectEqual(@as(usize, 1), activities.len);
@@ -20066,7 +21331,16 @@ test "ActivityTracker countActive returns correct count" {
     const now = std.time.microTimestamp();
     try tracker.updateActivity(1001, "alice", "app1", "192.168.1.1", null, "idle", null, now);
     try tracker.updateActivity(1002, "bob", "app2", "192.168.1.2", "SELECT 1", "active", now, now);
-    try tracker.updateActivity(1003, "charlie", "app3", "192.168.1.3", "INSERT INTO t VALUES (1)", "active", now, now);
+    try tracker.updateActivity(
+        1003,
+        "charlie",
+        "app3",
+        "192.168.1.3",
+        "INSERT INTO t VALUES (1)",
+        "active",
+        now,
+        now,
+    );
 
     try std.testing.expectEqual(@as(usize, 2), tracker.countActive());
 }
@@ -20153,7 +21427,16 @@ test "StatActivityScanOp populates state column correctly" {
     defer tracker.deinit();
 
     const now = std.time.microTimestamp();
-    try tracker.updateActivity(1001, "postgres", "psql", "127.0.0.1", "SELECT 1", "active", now, now);
+    try tracker.updateActivity(
+        1001,
+        "postgres",
+        "psql",
+        "127.0.0.1",
+        "SELECT 1",
+        "active",
+        now,
+        now,
+    );
 
     var op = StatActivityScanOp.init(allocator);
     op.setTracker(&tracker);
@@ -20221,7 +21504,16 @@ test "StatActivityScanOp iterates through multiple activities" {
     const now = std.time.microTimestamp();
     try tracker.updateActivity(1001, "alice", "app1", "192.168.1.1", null, "idle", null, now);
     try tracker.updateActivity(1002, "bob", "app2", "192.168.1.2", null, "idle", null, now);
-    try tracker.updateActivity(1003, "charlie", "app3", "192.168.1.3", "SELECT 1", "active", now, now);
+    try tracker.updateActivity(
+        1003,
+        "charlie",
+        "app3",
+        "192.168.1.3",
+        "SELECT 1",
+        "active",
+        now,
+        now,
+    );
 
     var op = StatActivityScanOp.init(allocator);
     op.setTracker(&tracker);
@@ -20248,7 +21540,7 @@ test "StatActivityScanOp next without open returns error" {
     try std.testing.expectError(error.ExecutionError, result);
 }
 
-// ── pg_locks tests ──────────────────────────────────────────────
+// ── pg_locks tests ─────────────────────────
 
 test "LocksScanOp returns empty result when no locks held" {
     const allocator = std.testing.allocator;
@@ -20282,7 +21574,8 @@ test "LocksScanOp shows table lock from AccessShareLock" {
     try op.open();
     defer op.close();
 
-    // Expected: 1 row with locktype='relation', mode='AccessShareLock', pid=100, relation=1, granted=true
+    // Expected: 1 row with locktype='relation', mode='AccessShareLock', pid=100, relation=1,
+    // granted=true
     var row = (try op.next()) orelse return error.TestExpectedRow;
     defer row.deinit();
 
@@ -20317,7 +21610,8 @@ test "LocksScanOp shows row lock from ExclusiveLock" {
     try op.open();
     defer op.close();
 
-    // Expected: 1 row with locktype='tuple', mode='RowExclusiveLock', pid=100, relation=1, tuple=42, granted=true
+    // Expected: 1 row with locktype='tuple', mode='RowExclusiveLock', pid=100, relation=1,
+    // tuple=42, granted=true
     var row = (try op.next()) orelse return error.TestExpectedRow;
     defer row.deinit();
 
@@ -20665,7 +21959,7 @@ test "LocksScanOp next without open returns error" {
     try std.testing.expectError(error.ExecutionError, result);
 }
 
-// ── Configuration System Tests ─────────────────────────────────────
+// ── Configuration System Tests ─────────────────────
 
 test "SetOp sets work_mem parameter" {
     const allocator = std.testing.allocator;
@@ -21801,7 +23095,8 @@ test "json_set sets value at single object key" {
     // json_set('{"a":1}', array_path_a, 2) → {"a":2}
     var path_items = [_]Value{Value{ .text = "a" }};
     const path_val = Value{ .array = &path_items };
-    const result = try evalJsonSet(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 2 });
+    const result =
+        try evalJsonSet(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 2 });
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
@@ -21815,7 +23110,8 @@ test "json_set creates missing key" {
     // json_set('{"a":1}', '{b}', 99) → {"a":1,"b":99}
     var path_items = [_]Value{Value{ .text = "b" }};
     const path_val = Value{ .array = &path_items };
-    const result = try evalJsonSet(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 99 });
+    const result =
+        try evalJsonSet(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 99 });
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
@@ -21829,7 +23125,12 @@ test "json_set navigates nested two-level path" {
     // json_set('{"a":{"b":1}}', '{a,b}', 42) → {"a":{"b":42}}
     var path_items = [_]Value{ Value{ .text = "a" }, Value{ .text = "b" } };
     const path_val = Value{ .array = &path_items };
-    const result = try evalJsonSet(allocator, Value{ .text = "{\"a\":{\"b\":1}}" }, path_val, Value{ .integer = 42 });
+    const result = try evalJsonSet(
+        allocator,
+        Value{ .text = "{\"a\":{\"b\":1}}" },
+        path_val,
+        Value{ .integer = 42 },
+    );
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
@@ -21842,7 +23143,12 @@ test "json_set navigates nested two-level path" {
 test "json_set with text array path syntax {x}" {
     const allocator = std.testing.allocator;
     // json_set('{"x":5}', '{x}', 99) via text path
-    const result = try evalJsonSet(allocator, Value{ .text = "{\"x\":5}" }, Value{ .text = "{x}" }, Value{ .integer = 99 });
+    const result = try evalJsonSet(
+        allocator,
+        Value{ .text = "{\"x\":5}" },
+        Value{ .text = "{x}" },
+        Value{ .integer = 99 },
+    );
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
@@ -21856,7 +23162,13 @@ test "json_insert inserts before index 1 in array" {
     // json_insert('[1,2,3]', idx=1, 99, insert_after=false) → [1,99,2,3]
     var path_items = [_]Value{Value{ .integer = 1 }};
     const path_val = Value{ .array = &path_items };
-    const result = try evalJsonInsert(allocator, Value{ .text = "[1,2,3]" }, path_val, Value{ .integer = 99 }, false);
+    const result = try evalJsonInsert(
+        allocator,
+        Value{ .text = "[1,2,3]" },
+        path_val,
+        Value{ .integer = 99 },
+        false,
+    );
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
@@ -21870,7 +23182,13 @@ test "json_insert inserts after index 1 in array" {
     // json_insert('[1,2,3]', idx=1, 99, insert_after=true) → [1,2,99,3]
     var path_items = [_]Value{Value{ .integer = 1 }};
     const path_val = Value{ .array = &path_items };
-    const result = try evalJsonInsert(allocator, Value{ .text = "[1,2,3]" }, path_val, Value{ .integer = 99 }, true);
+    const result = try evalJsonInsert(
+        allocator,
+        Value{ .text = "[1,2,3]" },
+        path_val,
+        Value{ .integer = 99 },
+        true,
+    );
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
@@ -21884,7 +23202,13 @@ test "json_insert adds missing key to object" {
     // json_insert('{"a":1}', '{b}', 2) → {"a":1,"b":2}
     var path_items = [_]Value{Value{ .text = "b" }};
     const path_val = Value{ .array = &path_items };
-    const result = try evalJsonInsert(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 2 }, false);
+    const result = try evalJsonInsert(
+        allocator,
+        Value{ .text = "{\"a\":1}" },
+        path_val,
+        Value{ .integer = 2 },
+        false,
+    );
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
@@ -21898,7 +23222,13 @@ test "json_insert is no-op for object when key exists" {
     // json_insert('{"a":1}', '{a}', 99) → {"a":1} (key exists, no change)
     var path_items = [_]Value{Value{ .text = "a" }};
     const path_val = Value{ .array = &path_items };
-    const result = try evalJsonInsert(allocator, Value{ .text = "{\"a\":1}" }, path_val, Value{ .integer = 99 }, false);
+    const result = try evalJsonInsert(
+        allocator,
+        Value{ .text = "{\"a\":1}" },
+        path_val,
+        Value{ .integer = 99 },
+        false,
+    );
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.text, .{});
@@ -22632,9 +23962,9 @@ test "json_object with invalid array JSON returns NULL" {
     try std.testing.expect(result == .null_value);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // STRING FUNCTIONS
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "substring extracts substring with from_pos and length" {
     const allocator = std.testing.allocator;
@@ -23150,9 +24480,9 @@ test "initcap with single word capitalizes first letter only" {
     try std.testing.expectEqualStrings("Hello", result.text);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // MATH FUNCTIONS
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "round rounds to nearest integer by default" {
     const allocator = std.testing.allocator;
@@ -23736,7 +25066,8 @@ test "date_trunc truncates timestamp to minute" {
     defer result.free(allocator);
     try std.testing.expect(result == .timestamp);
     const days: i32 = dateToDays(2023, 6, 15);
-    const expected: i64 = @as(i64, days) * MICROS_PER_DAY + 14 * MICROS_PER_HOUR + 30 * MICROS_PER_MINUTE;
+    const expected: i64 =
+        @as(i64, days) * MICROS_PER_DAY + 14 * MICROS_PER_HOUR + 30 * MICROS_PER_MINUTE;
     try std.testing.expectEqual(expected, result.timestamp);
 }
 
@@ -24375,9 +25706,9 @@ test "overlay NULL placing returns NULL" {
     try std.testing.expect(result == .null_value);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // concat_ws tests
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "concat_ws basic concatenation with separator" {
     const allocator = std.testing.allocator;
@@ -24463,9 +25794,9 @@ test "concat_ws with no value arguments returns empty string" {
     try std.testing.expectEqualStrings("", result.text);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // format tests
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "format with %s replaces with text argument" {
     const allocator = std.testing.allocator;
@@ -24547,9 +25878,9 @@ test "format with NULL format string returns NULL" {
     try std.testing.expect(result == .null_value);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // string_agg tests
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "string_agg basic concatenation with delimiter" {
     const allocator = std.testing.allocator;
@@ -24695,9 +26026,9 @@ test "string_agg returns NULL for empty group" {
     try std.testing.expect(result == .null_value);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Math scalar function tests
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "exp(1) computes e to the power of 1" {
     const allocator = std.testing.allocator;
@@ -25063,9 +26394,9 @@ test "cot(π/4) returns approximately 1" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.real, 1e-6);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Aggregate function tests: bool_and, bool_or, bit_and, bit_or
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "bool_and all true rows returns true" {
     const allocator = std.testing.allocator;
@@ -25887,7 +27218,8 @@ test "to_char formats timestamp with abbreviated weekday and month" {
     const allocator = std.testing.allocator;
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
-    // to_char(timestamp('2024-01-15'), 'DY, DD MON YYYY') → 'MON, 15 JAN 2024' (2024-01-15 is a Monday)
+    // to_char(timestamp('2024-01-15'), 'DY, DD MON YYYY') → 'MON, 15 JAN 2024' (2024-01-15 is a
+    // Monday)
     const ts_expr = ast.Expr{ .string_literal = "2024-01-15 10:30:00" };
     const fmt_expr = ast.Expr{ .string_literal = "DY, DD MON YYYY" };
     const args = [_]*const ast.Expr{ &ts_expr, &fmt_expr };
@@ -25935,7 +27267,8 @@ test "to_timestamp parses ISO datetime string" {
     const allocator = std.testing.allocator;
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
-    // to_timestamp('2024-01-15 10:30:00', 'YYYY-MM-DD HH24:MI:SS') → timestamp for 2024-01-15 10:30:00
+    // to_timestamp('2024-01-15 10:30:00', 'YYYY-MM-DD HH24:MI:SS') → timestamp for 2024-01-15
+    // 10:30:00
     const text_expr = ast.Expr{ .string_literal = "2024-01-15 10:30:00" };
     const fmt_expr = ast.Expr{ .string_literal = "YYYY-MM-DD HH24:MI:SS" };
     const args = [_]*const ast.Expr{ &text_expr, &fmt_expr };
@@ -26256,9 +27589,9 @@ test "to_number parses large number with comma and decimal" {
     try std.testing.expectApproxEqAbs(result.real, 999999.99, 0.001);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // ARRAY/STRING UTILITY FUNCTIONS
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "string_to_array splits by delimiter" {
     const allocator = std.testing.allocator;
@@ -26652,9 +27985,9 @@ test "atan2 with NULL y returns NULL" {
     try std.testing.expect(result == .null_value);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // ARRAY MANIPULATION FUNCTIONS
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "array_append with integer array and element" {
     const allocator = std.testing.allocator;
@@ -27247,9 +28580,9 @@ test "array_remove with NULL array returns NULL" {
     try std.testing.expect(result == .null_value);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // EDGE CASE TESTS FOR ARRAY/STRING/CONVERSION FUNCTIONS
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "array_to_string with empty array returns empty string" {
     const allocator = std.testing.allocator;
@@ -27302,7 +28635,8 @@ test "array_to_string with NULL elements replaces with null_text parameter" {
     defer result.free(allocator);
     try std.testing.expect(result == .text);
     // Verify it contains the elements with delimiter
-    try std.testing.expectEqual(@as(usize, 5), result.text.len); // "1" + "," + "X" + "," + "3" = 5 chars
+    // "1" + "," + "X" + "," + "3" = 5 chars
+    try std.testing.expectEqual(@as(usize, 5), result.text.len);
 }
 
 test "array_to_string with single element" {
@@ -27599,9 +28933,9 @@ test "array_remove all elements removes all occurrences" {
     try std.testing.expectEqual(@as(usize, 0), result.array.len);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // DATE VALIDATION AND LEAP YEAR EDGE CASES
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "to_date leap year Feb 29 in year 2000 (divisible by 400)" {
     const allocator = std.testing.allocator;
@@ -27751,9 +29085,9 @@ test "array_prepend with NULL element adds null_value at front" {
     try std.testing.expectEqual(@as(i64, 2), result.array[2].integer);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // ARRAY DIMENSIONS AND UTILITY FUNCTIONS
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "array_dims returns dimension subscripts for 3-element array" {
     const allocator = std.testing.allocator;
@@ -28365,9 +29699,9 @@ test "array_replace replaces NULL elements with value" {
     try std.testing.expectEqual(@as(i64, 1), result.array[2].integer);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // REGEXP FUNCTION TESTS (Red Phase TDD)
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 // ─ regexp_like Tests
 
@@ -29024,10 +30358,10 @@ test "regexp_instr with end_option 0 returns position of match start" {
     try std.testing.expectEqual(@as(i64, 7), result.integer);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Statistical aggregate functions: var_pop, var_samp, variance, stddev_pop,
 // stddev_samp, stddev, every
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "var_pop calculates population variance for numeric values" {
     const allocator = std.testing.allocator;
@@ -29569,9 +30903,9 @@ test "every returns false when one flag is false" {
     try std.testing.expectEqual(@as(i64, 0), result.integer);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Date/Time construction functions: make_date, make_time, make_timestamp, age
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "make_date constructs valid date from year, month, day" {
     const allocator = std.testing.allocator;
@@ -29730,7 +31064,8 @@ test "make_timestamp constructs valid timestamp" {
     const hour_expr = ast.Expr{ .integer_literal = 14 };
     const min_expr = ast.Expr{ .integer_literal = 30 };
     const sec_expr = ast.Expr{ .float_literal = 45.0 };
-    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
+    const args =
+        [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
     const fc = .{ .name = "make_timestamp", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29750,7 +31085,8 @@ test "make_timestamp with invalid month returns NULL" {
     const hour_expr = ast.Expr{ .integer_literal = 14 };
     const min_expr = ast.Expr{ .integer_literal = 30 };
     const sec_expr = ast.Expr{ .float_literal = 45.0 };
-    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
+    const args =
+        [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
     const fc = .{ .name = "make_timestamp", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29769,7 +31105,8 @@ test "make_timestamp with invalid hour returns NULL" {
     const hour_expr = ast.Expr{ .integer_literal = 25 };
     const min_expr = ast.Expr{ .integer_literal = 30 };
     const sec_expr = ast.Expr{ .float_literal = 45.0 };
-    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
+    const args =
+        [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
     const fc = .{ .name = "make_timestamp", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29788,7 +31125,8 @@ test "make_timestamp with NULL day returns NULL" {
     const hour_expr = ast.Expr{ .integer_literal = 14 };
     const min_expr = ast.Expr{ .integer_literal = 30 };
     const sec_expr = ast.Expr{ .float_literal = 45.0 };
-    const args = [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
+    const args =
+        [_]*const ast.Expr{ &year_expr, &month_expr, &day_expr, &hour_expr, &min_expr, &sec_expr };
     const fc = .{ .name = "make_timestamp", .args = &args, .distinct = false };
 
     const result = try evalFunctionCall(allocator, fc, &empty_row, null);
@@ -29872,7 +31210,8 @@ test "age(timestamp1, timestamp2) validates interval fields" {
     try std.testing.expect(result == .interval);
     try std.testing.expectEqual(@as(i32, 0), result.interval.months);
     try std.testing.expectEqual(@as(i32, 0), result.interval.days);
-    try std.testing.expectEqual(@as(i64, 45_000_000), result.interval.micros); // 45 seconds × 1,000,000
+    // 45 seconds × 1,000,000
+    try std.testing.expectEqual(@as(i64, 45_000_000), result.interval.micros);
 }
 
 test "make_date with leap year Feb 29 returns valid date" {
@@ -29999,7 +31338,7 @@ test "stddev with single row returns NULL" {
     try std.testing.expect(result == .null_value);
 }
 
-// ─ coalesce / nullif / greatest / least / typeof Tests ──────────────────────
+// ─ coalesce / nullif / greatest / least / typeof Tests ─────────────
 
 test "coalesce returns first non-NULL value" {
     const allocator = std.testing.allocator;
@@ -30234,11 +31573,11 @@ test "typeof returns 'real' for float value" {
     try std.testing.expectEqualStrings("real", result.text);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // Regression aggregate functions: corr, covar_pop, covar_samp, regr_slope,
 // regr_intercept, regr_r2, regr_count, regr_avgx, regr_avgy, regr_sxx,
 // regr_syy, regr_sxy
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "corr calculates pearson correlation for perfect positive linear data" {
     const allocator = std.testing.allocator;
@@ -31254,7 +32593,7 @@ test "regr_sxy with no valid pairs returns NULL" {
     try std.testing.expect(result == .null_value);
 }
 
-// ── row_to_json Tests ──────────────────────────────────────────────────────────
+// ── row_to_json Tests ────────────────────────
 
 test "row_to_json basic two columns converts to JSON object" {
     const allocator = std.testing.allocator;
@@ -31510,11 +32849,11 @@ test "row_to_json with mixed data types" {
     try std.testing.expect(std.mem.indexOf(u8, result.text, "\"e\"") != null);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // System Information Functions: version, current_user, current_schema,
 // current_database, clock_timestamp, txid_current, num_nulls, num_nonnulls,
 // setseed, pg_table_size, pg_total_relation_size, pg_database_size
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "version() returns text starting with 'Silica'" {
     const allocator = std.testing.allocator;
@@ -31740,7 +33079,7 @@ test "setseed rejects negative seed outside valid range" {
     try std.testing.expect(result == error.TypeError);
 }
 
-// ── json_object_agg Tests ────────────────────────────────────────────────────
+// ── json_object_agg Tests ──────────────────────
 
 test "json_object_agg basic text key integer value" {
     const allocator = std.testing.allocator;
@@ -32100,8 +33439,10 @@ test "JSON_QUERY extract JSON object $.address" {
     const allocator = std.testing.allocator;
     const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = allocator };
 
-    // JSON_QUERY('{"address":{"city":"NYC","zip":"10001"}}', '$.address') → {"city":"NYC","zip":"10001"}
-    const json_expr = ast.Expr{ .string_literal = "{\"address\":{\"city\":\"NYC\",\"zip\":\"10001\"}}" };
+    // JSON_QUERY('{"address":{"city":"NYC","zip":"10001"}}', '$.address') →
+    // {"city":"NYC","zip":"10001"}
+    const json_expr =
+        ast.Expr{ .string_literal = "{\"address\":{\"city\":\"NYC\",\"zip\":\"10001\"}}" };
     const path_expr = ast.Expr{ .string_literal = "$.address" };
     const args = [_]*const ast.Expr{ &json_expr, &path_expr };
     const fc = .{ .name = "JSON_QUERY", .args = &args, .distinct = false };
@@ -32146,7 +33487,7 @@ test "JSON_EXISTS returns false when path does not exist" {
     try std.testing.expectEqual(false, result.boolean);
 }
 
-// ── Index-Only Scan Step 5/7 Tests (TDD Red Phase) ──────────────────────────────
+// ── Index-Only Scan Step 5/7 Tests (TDD Red Phase) ──────────────
 //
 // Tests for IndexScanOp.covering fast path and new IndexOnlyScanOp struct.
 // These tests construct covering index B+Tree entries and verify that operators
@@ -32165,7 +33506,8 @@ test "step 5: IndexScanOp.covering fast path decodes covering entry and returns 
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_covering.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_covering.db", .{dir_path});
 
     // Create a test pager and buffer pool
     var pager = try Pager.init(allocator, path, .{});
@@ -32201,7 +33543,8 @@ test "step 5: IndexScanOp.covering fast path decodes covering entry and returns 
     const included_vals = [_]Value{.{ .text = "Alice" }};
 
     // Encode the covering entry
-    const covering_entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &included_vals);
+    const covering_entry =
+        try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &included_vals);
     defer allocator.free(covering_entry);
 
     // Insert into the index B+Tree using a simple index key (e.g., "42" as text for simplicity)
@@ -32250,7 +33593,8 @@ test "step 5: IndexScanOp.covering with column reordering/subset returns correct
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_reorder.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_reorder.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32284,7 +33628,8 @@ test "step 5: IndexScanOp.covering with column reordering/subset returns correct
         .{ .integer = 30 },
     };
 
-    const covering_entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &included_vals);
+    const covering_entry =
+        try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &included_vals);
     defer allocator.free(covering_entry);
 
     const index_key = "5";
@@ -32360,7 +33705,12 @@ test "step 5: IndexScanOp.covering MVCC filters invisible tuples" {
     };
 
     const included_vals = [_]Value{.{ .text = "Deleted" }};
-    const covering_entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, deleted_header, &included_vals);
+    const covering_entry = try index_entry_mod.encodeIndexEntry(
+        allocator,
+        &row_key_buf,
+        deleted_header,
+        &included_vals,
+    );
     defer allocator.free(covering_entry);
 
     const index_key = "999";
@@ -32408,7 +33758,8 @@ test "step 5: IndexScanOp.covering with missing index entry returns null" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_missing.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_scan_missing.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32454,7 +33805,8 @@ test "step 5: IndexOnlyScanOp iterates covering index B+Tree returning all rows"
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_only_scan_iterate.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_step5_index_only_scan_iterate.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32749,7 +34101,8 @@ test "step 5b: IndexOnlyScanOp with composite_key decodes indexed column correct
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5b_index_only_composite.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_step5b_index_only_composite.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -32786,7 +34139,8 @@ test "step 5b: IndexOnlyScanOp with composite_key decodes indexed column correct
                 .flags = .{},
             };
             const vals = [_]Value{.{ .integer = 100 }};
-            const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+            const entry =
+                try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
             defer allocator.free(entry);
 
             // Build composite key: [4-byte length] + idx_key + row_key
@@ -32813,7 +34167,8 @@ test "step 5b: IndexOnlyScanOp with composite_key decodes indexed column correct
             // Use different included column values for row3 vs row4
             const included_value = if (i == 0) @as(i64, 200) else @as(i64, 201);
             const vals = [_]Value{.{ .integer = included_value }};
-            const entry = try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
+            const entry =
+                try index_entry_mod.encodeIndexEntry(allocator, &row_key_buf, header, &vals);
             defer allocator.free(entry);
 
             // Build composite key
@@ -32837,7 +34192,8 @@ test "step 5b: IndexOnlyScanOp with composite_key decodes indexed column correct
         &col_names,
     );
 
-    // THIS SHOULD FAIL TO COMPILE OR ASSIGN: composite_key field doesn't exist on IndexOnlyScanOp yet
+    // THIS SHOULD FAIL TO COMPILE OR ASSIGN: composite_key field doesn't exist on IndexOnlyScanOp
+    // yet
     // (This is the expected TDD red state for the regression fix)
     index_only_scan.composite_key = true;
 
@@ -32884,7 +34240,7 @@ test "step 5b: IndexOnlyScanOp with composite_key decodes indexed column correct
     try std.testing.expectEqual(@as(i64, 201), bob_salaries[1]);
 }
 
-// ── Phase 0c: IndexScanOp Multi-Row Iteration Tests (TDD Red Phase) ──────────────────────────────
+// ── Phase 0c: IndexScanOp Multi-Row Iteration Tests (TDD Red Phase) ────────
 //
 // Tests for IndexScanOp.composite_key field and multi-row .next() iteration behavior.
 // When composite_key=true, the same indexed column value can have multiple rows (non-unique index).
@@ -32906,7 +34262,8 @@ test "phase 0c: IndexScanOp.composite_key multi-row returns all rows under same 
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_multi_row.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_multi_row.db", .{dir_path});
 
     // Setup: create index and data B+Trees
     var pager = try Pager.init(allocator, path, .{});
@@ -33004,7 +34361,8 @@ test "phase 0c: IndexScanOp.composite_key MVCC filters but continues to next row
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_mvcc_filter.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_mvcc_filter.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33103,7 +34461,8 @@ test "phase 0c: IndexScanOp.composite_key orphaned entry doesn't terminate scan"
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_orphan.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_orphan.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33183,7 +34542,8 @@ test "phase 0c: IndexScanOp.composite_key=false (legacy) single-row point lookup
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_legacy_single_row.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_legacy_single_row.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33256,7 +34616,8 @@ test "phase 0c: IndexScanOp.composite_key empty match returns null immediately" 
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_empty.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_phase0c_composite_empty.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33314,7 +34675,8 @@ test "BitmapIndexScanOp point lookup single match (composite_key=false)" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_single.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_single.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33359,7 +34721,8 @@ test "BitmapIndexScanOp point lookup no match (composite_key=false)" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_no_match.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_no_match.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33401,7 +34764,8 @@ test "BitmapIndexScanOp composite-key lookup multiple matches" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_composite.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_composite.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33464,7 +34828,11 @@ test "BitmapIndexScanOp composite-key lookup no match" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_composite_no_match.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_bitmap_index_scan_composite_no_match.db",
+        .{dir_path},
+    );
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33509,7 +34877,8 @@ test "BitmapIndexScanOp memory cleanup" {
     defer allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_memory.db", .{dir_path});
+    const path =
+        try std.fmt.bufPrint(&path_buf, "{s}/test_bitmap_index_scan_memory.db", .{dir_path});
 
     var pager = try Pager.init(allocator, path, .{});
     defer pager.deinit();
@@ -33543,7 +34912,7 @@ test "BitmapIndexScanOp memory cleanup" {
     // Allocator will panic if we leak memory, so clean deallocation is validated
 }
 
-// ── Phase 3: BitmapAndOp and BitmapOrOp Tests ──────────────────────────────
+// ── Phase 3: BitmapAndOp and BitmapOrOp Tests ────────────────
 
 test "BitmapAndOp with two inputs partial overlap" {
     const allocator = std.testing.allocator;
@@ -33991,7 +35360,8 @@ test "BitmapAndOp with disjoint sets returns empty" {
     defer allocator.free(dir_path);
 
     var path1_buf: [512]u8 = undefined;
-    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_disjoint_1.db", .{dir_path});
+    const path1 =
+        try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_disjoint_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -34012,7 +35382,8 @@ test "BitmapAndOp with disjoint sets returns empty" {
     try tree1.insert("key2", "row_2");
 
     var path2_buf: [512]u8 = undefined;
-    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_disjoint_2.db", .{dir_path});
+    const path2 =
+        try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_disjoint_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -34058,7 +35429,8 @@ test "BitmapOrOp with disjoint sets returns union of both" {
     defer allocator.free(dir_path);
 
     var path1_buf: [512]u8 = undefined;
-    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_or_disjoint_pair_1.db", .{dir_path});
+    const path1 =
+        try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_or_disjoint_pair_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -34079,7 +35451,8 @@ test "BitmapOrOp with disjoint sets returns union of both" {
     try tree1.insert("key2", "row_2");
 
     var path2_buf: [512]u8 = undefined;
-    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_or_disjoint_pair_2.db", .{dir_path});
+    const path2 =
+        try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_or_disjoint_pair_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -34359,7 +35732,8 @@ test "BitmapAndOp.scan() can be called multiple times without mutation" {
     defer allocator.free(dir_path);
 
     var path1_buf: [512]u8 = undefined;
-    const path1 = try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_reusable_1.db", .{dir_path});
+    const path1 =
+        try std.fmt.bufPrint(&path1_buf, "{s}/test_bitmap_and_reusable_1.db", .{dir_path});
 
     var pager1 = try Pager.init(allocator, path1, .{});
     defer pager1.deinit();
@@ -34379,7 +35753,8 @@ test "BitmapAndOp.scan() can be called multiple times without mutation" {
     try tree1.insert("key1", "row_1");
 
     var path2_buf: [512]u8 = undefined;
-    const path2 = try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_reusable_2.db", .{dir_path});
+    const path2 =
+        try std.fmt.bufPrint(&path2_buf, "{s}/test_bitmap_and_reusable_2.db", .{dir_path});
 
     var pager2 = try Pager.init(allocator, path2, .{});
     defer pager2.deinit();
@@ -34507,10 +35882,12 @@ test "BitmapHeapScanOp basic scan with single BitmapIndexScanOp input" {
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_basic_data.db", .{dir_path});
+    const data_path =
+        try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_basic_data.db", .{dir_path});
 
     var index_path_buf: [512]u8 = undefined;
-    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_basic_index.db", .{dir_path});
+    const index_path =
+        try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_basic_index.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34565,7 +35942,8 @@ test "BitmapHeapScanOp basic scan with single BitmapIndexScanOp input" {
 
     // Create BitmapHeapScanOp (expected to exist and take bitmap_plan + data_root)
     const col_names = [_][]const u8{ "name", "age" };
-    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    var heap_scan =
+        BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
     defer heap_scan.close();
 
     // Scan should return the matching row
@@ -34592,13 +35970,16 @@ test "BitmapHeapScanOp with BitmapAndOp intersection input" {
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_and_data.db", .{dir_path});
+    const data_path =
+        try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_and_data.db", .{dir_path});
 
     var index1_path_buf: [512]u8 = undefined;
-    const index1_path = try std.fmt.bufPrint(&index1_path_buf, "{s}/test_bitmap_heap_and_idx1.db", .{dir_path});
+    const index1_path =
+        try std.fmt.bufPrint(&index1_path_buf, "{s}/test_bitmap_heap_and_idx1.db", .{dir_path});
 
     var index2_path_buf: [512]u8 = undefined;
-    const index2_path = try std.fmt.bufPrint(&index2_path_buf, "{s}/test_bitmap_heap_and_idx2.db", .{dir_path});
+    const index2_path =
+        try std.fmt.bufPrint(&index2_path_buf, "{s}/test_bitmap_heap_and_idx2.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34706,13 +36087,16 @@ test "BitmapHeapScanOp with BitmapOrOp union input" {
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_or_data.db", .{dir_path});
+    const data_path =
+        try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_or_data.db", .{dir_path});
 
     var index1_path_buf: [512]u8 = undefined;
-    const index1_path = try std.fmt.bufPrint(&index1_path_buf, "{s}/test_bitmap_heap_or_idx1.db", .{dir_path});
+    const index1_path =
+        try std.fmt.bufPrint(&index1_path_buf, "{s}/test_bitmap_heap_or_idx1.db", .{dir_path});
 
     var index2_path_buf: [512]u8 = undefined;
-    const index2_path = try std.fmt.bufPrint(&index2_path_buf, "{s}/test_bitmap_heap_or_idx2.db", .{dir_path});
+    const index2_path =
+        try std.fmt.bufPrint(&index2_path_buf, "{s}/test_bitmap_heap_or_idx2.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34798,7 +36182,8 @@ test "BitmapHeapScanOp with BitmapOrOp union input" {
     while (try heap_scan.next()) |row| {
         count += 1;
         var r = row;
-        try std.testing.expect(std.mem.eql(u8, r.values[0].text, "Alice") or std.mem.eql(u8, r.values[0].text, "Bob"));
+        try std.testing.expect(std.mem.eql(u8, r.values[0].text, "Alice") or
+            std.mem.eql(u8, r.values[0].text, "Bob"));
         r.deinit();
     }
     try std.testing.expectEqual(@as(usize, 2), count);
@@ -34814,10 +36199,18 @@ test "BitmapHeapScanOp MVCC visibility filters invisible tuple" {
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_mvcc_invisible_data.db", .{dir_path});
+    const data_path = try std.fmt.bufPrint(
+        &data_path_buf,
+        "{s}/test_bitmap_heap_mvcc_invisible_data.db",
+        .{dir_path},
+    );
 
     var index_path_buf: [512]u8 = undefined;
-    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_mvcc_invisible_idx.db", .{dir_path});
+    const index_path = try std.fmt.bufPrint(
+        &index_path_buf,
+        "{s}/test_bitmap_heap_mvcc_invisible_idx.db",
+        .{dir_path},
+    );
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34870,7 +36263,8 @@ test "BitmapHeapScanOp MVCC visibility filters invisible tuple" {
 
     // Create BitmapHeapScanOp with MVCC context
     const col_names = [_][]const u8{"name"};
-    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    var heap_scan =
+        BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
     defer heap_scan.close();
 
     // Set MVCC context: current_xid=30, snapshot sees xids < 31 as committed
@@ -34898,10 +36292,18 @@ test "BitmapHeapScanOp MVCC visibility includes visible tuple" {
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_mvcc_visible_data.db", .{dir_path});
+    const data_path = try std.fmt.bufPrint(
+        &data_path_buf,
+        "{s}/test_bitmap_heap_mvcc_visible_data.db",
+        .{dir_path},
+    );
 
     var index_path_buf: [512]u8 = undefined;
-    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_mvcc_visible_idx.db", .{dir_path});
+    const index_path = try std.fmt.bufPrint(
+        &index_path_buf,
+        "{s}/test_bitmap_heap_mvcc_visible_idx.db",
+        .{dir_path},
+    );
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -34954,7 +36356,8 @@ test "BitmapHeapScanOp MVCC visibility includes visible tuple" {
 
     // Create BitmapHeapScanOp with MVCC context
     const col_names = [_][]const u8{"name"};
-    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    var heap_scan =
+        BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
     defer heap_scan.close();
 
     // Set MVCC context: current_xid=30, snapshot sees xids < 31 as committed
@@ -34989,10 +36392,12 @@ test "BitmapHeapScanOp skips orphaned index entries without stopping" {
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_orphan_data.db", .{dir_path});
+    const data_path =
+        try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_orphan_data.db", .{dir_path});
 
     var index_path_buf: [512]u8 = undefined;
-    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_orphan_idx.db", .{dir_path});
+    const index_path =
+        try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_orphan_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -35034,13 +36439,15 @@ test "BitmapHeapScanOp skips orphaned index entries without stopping" {
     defer allocator.free(data2);
     try data_tree.insert("row_3", data2);
 
-    // Insert index entries: key_1 -> row_1 (exists), key_2 -> row_2 (orphaned), key_3 -> row_3 (exists)
+    // Insert index entries: key_1 -> row_1 (exists), key_2 -> row_2 (orphaned), key_3 -> row_3
+    // (exists)
     var index_tree = BTree.init(&index_pool, index_root);
     try index_tree.insert("key_1", "row_1");
     try index_tree.insert("key_2", "row_2"); // No corresponding data row
     try index_tree.insert("key_3", "row_3");
 
-    // Scan key_1, key_2, key_3 via separate BitmapIndexScanOp and combine with OR to get all three row_key candidates
+    // Scan key_1, key_2, key_3 via separate BitmapIndexScanOp and combine with OR to get all three
+    // row_key candidates
     var scan1 = BitmapIndexScanOp.init(allocator, &index_pool, index_root, "key_1");
     const plan1 = scan1.asBitmapPlan();
 
@@ -35085,10 +36492,12 @@ test "BitmapHeapScanOp with empty RowKeySet returns null immediately" {
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_empty_data.db", .{dir_path});
+    const data_path =
+        try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_empty_data.db", .{dir_path});
 
     var index_path_buf: [512]u8 = undefined;
-    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_empty_idx.db", .{dir_path});
+    const index_path =
+        try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_empty_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -35124,7 +36533,8 @@ test "BitmapHeapScanOp with empty RowKeySet returns null immediately" {
 
     // Create BitmapHeapScanOp
     const col_names = [_][]const u8{"name"};
-    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    var heap_scan =
+        BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
     defer heap_scan.close();
 
     // Should return null immediately (empty RowKeySet)
@@ -35142,10 +36552,12 @@ test "BitmapHeapScanOp memory cleanup with close()" {
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_cleanup_data.db", .{dir_path});
+    const data_path =
+        try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_cleanup_data.db", .{dir_path});
 
     var index_path_buf: [512]u8 = undefined;
-    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_cleanup_idx.db", .{dir_path});
+    const index_path =
+        try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_cleanup_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -35192,7 +36604,8 @@ test "BitmapHeapScanOp memory cleanup with close()" {
 
     // Create BitmapHeapScanOp
     const col_names = [_][]const u8{"name"};
-    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    var heap_scan =
+        BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
 
     // Call next() to populate the internal RowKeySet
     const row = try heap_scan.next();
@@ -35205,7 +36618,7 @@ test "BitmapHeapScanOp memory cleanup with close()" {
     // If there's a leak in close(), std.testing.allocator will catch it
 }
 
-test "BitmapHeapScanOp pads row with null when col_names exceeds stored values (ALTER TABLE ADD COLUMN)" {
+test "BitmapHeapScanOp pads row with null when col_names exceeds stored values (ADD COLUMN)" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -35215,10 +36628,12 @@ test "BitmapHeapScanOp pads row with null when col_names exceeds stored values (
     defer allocator.free(dir_path);
 
     var data_path_buf: [512]u8 = undefined;
-    const data_path = try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_padrow_data.db", .{dir_path});
+    const data_path =
+        try std.fmt.bufPrint(&data_path_buf, "{s}/test_bitmap_heap_padrow_data.db", .{dir_path});
 
     var index_path_buf: [512]u8 = undefined;
-    const index_path = try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_padrow_idx.db", .{dir_path});
+    const index_path =
+        try std.fmt.bufPrint(&index_path_buf, "{s}/test_bitmap_heap_padrow_idx.db", .{dir_path});
 
     var data_pager = try Pager.init(allocator, data_path, .{});
     defer data_pager.deinit();
@@ -35266,7 +36681,8 @@ test "BitmapHeapScanOp pads row with null when col_names exceeds stored values (
     // Create BitmapHeapScanOp with MORE columns than the stored row has
     // (simulating ALTER TABLE ADD COLUMN adding "age" and "email")
     const col_names = [_][]const u8{ "name", "age", "email" };
-    var heap_scan = BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
+    var heap_scan =
+        BitmapHeapScanOp.init(allocator, &data_pool, data_root, bitmap_plan, &col_names);
     defer heap_scan.close();
 
     // Scan should return the row with padding
@@ -35291,7 +36707,7 @@ test "BitmapHeapScanOp pads row with null when col_names exceeds stored values (
     try std.testing.expect(next_row == null);
 }
 
-// ── MatchRecognizeOp Tests ──────────────────────────────────────────────────
+// ── MatchRecognizeOp Tests ──────────────────────
 
 test "MatchRecognizeOp ONE ROW PER MATCH basic case: V-shape pattern" {
     const allocator = std.testing.allocator;
@@ -35657,7 +37073,8 @@ test "MatchRecognizeOp no match found: pattern never matches input" {
 
     const b_col = ast.Expr{ .column_ref = .{ .name = "val" } };
     const nonexistent = ast.Expr{ .string_literal = "does-not-exist" };
-    const b_condition = ast.Expr{ .binary_op = .{ .op = .equal, .left = &b_col, .right = &nonexistent } };
+    const b_condition =
+        ast.Expr{ .binary_op = .{ .op = .equal, .left = &b_col, .right = &nonexistent } };
     const define_items = &[_]ast.DefineItem{
         .{ .variable = "B", .condition = &b_condition },
     };
