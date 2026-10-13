@@ -61,8 +61,6 @@ function_length:src/tx/jepsen_test.zig:longForkTestDisabled:111
 function_length:src/tx/vacuum.zig:vacuumTable:126
 function_length:src/storage/hash_index.zig:insertIntoChain:75
 function_length:src/config/file.zig:parseConfigFile:181
-debug_print_in_lib:src/server/server.zig:8
-debug_print_in_lib:src/sql/engine.zig:2
 debug_print_in_lib:src/tidy.zig:3
 catch_unreachable_no_safety:src/tidy.zig:1
 std_time_in_lib:src/cli.zig:3
