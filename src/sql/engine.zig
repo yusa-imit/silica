@@ -24,6 +24,7 @@ const ENABLE_TESTS = true;
 const ENABLE_PREPARED_STMT_TESTS = true;
 
 const std = @import("std");
+const log = std.log.scoped(.engine);
 const Allocator = std.mem.Allocator;
 
 const tokenizer_mod = @import("tokenizer.zig");
@@ -1344,13 +1345,13 @@ pub const Database = struct {
             // Load and apply config file (ignore errors - use defaults if file is invalid)
             loader.load() catch |err| {
                 // Log warning but continue with defaults
-                std.debug.print("Warning: Failed to load config from {s}: {}\n", .{ config_path, err });
+                log.warn("Failed to load config from {s}: {}", .{ config_path, err });
             };
 
             // Apply config to manager (this overrides defaults with file values)
             loader.applyTo(&config) catch |err| {
                 // Log warning but continue
-                std.debug.print("Warning: Failed to apply config from {s}: {}\n", .{ config_path, err });
+                log.warn("Failed to apply config from {s}: {}", .{ config_path, err });
             };
         }
 

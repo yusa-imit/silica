@@ -10,6 +10,7 @@ const Database = silica.engine.Database;
 const Connection = @import("connection.zig").Connection;
 const wire = @import("wire.zig");
 const auth = @import("auth.zig");
+const log = std.log.scoped(.server);
 
 /// Server represents a TCP server that accepts PostgreSQL wire protocol connections
 pub const Server = struct {
@@ -87,7 +88,7 @@ pub const Server = struct {
     /// Start the server and begin accepting connections
     pub fn start(self: *Self) !void {
         self.running = true;
-        std.debug.print("Silica server listening on {any}\n", .{self.address});
+        log.info("Silica server listening on {any}", .{self.address});
 
         while (self.running) {
             // Check connection limit
@@ -100,7 +101,7 @@ pub const Server = struct {
 
             // Accept a new connection
             const client = self.listener.accept() catch |err| {
-                std.debug.print("Error accepting connection: {any}\n", .{err});
+                log.warn("Error accepting connection: {any}", .{err});
                 continue;
             };
 
@@ -147,7 +148,7 @@ pub const Server = struct {
     /// timeout_ms: maximum time to wait for connections to finish (0 = wait indefinitely)
     /// Returns true if shutdown completed cleanly, false if forceful shutdown required
     pub fn shutdown(self: *Self, timeout_ms: u64) bool {
-        std.debug.print("Initiating graceful shutdown...\n", .{});
+        log.info("Initiating graceful shutdown...", .{});
 
         // Stop accepting new connections
         self.stop();
@@ -156,10 +157,10 @@ pub const Server = struct {
         const all_finished = self.waitForConnections(timeout_ms);
 
         if (all_finished) {
-            std.debug.print("All connections closed cleanly\n", .{});
+            log.info("All connections closed cleanly", .{});
         } else {
             const remaining = self.active_connections.load(.acquire);
-            std.debug.print("Shutdown timeout: {d} connections still active\n", .{remaining});
+            log.warn("Shutdown timeout: {d} connections still active", .{remaining});
         }
 
         return all_finished;
@@ -174,7 +175,7 @@ pub const Server = struct {
 
         // Perform startup handshake and authentication
         const startup_info = self.performStartup(client.stream) catch |err| {
-            std.debug.print("Startup handshake failed: {any}\n", .{err});
+            log.warn("Startup handshake failed: {any}", .{err});
             return;
         };
         defer self.allocator.free(startup_info.user);
@@ -187,14 +188,14 @@ pub const Server = struct {
             startup_info.user,
             startup_info.database,
         ) catch |err| {
-            std.debug.print("Failed to initialize connection: {any}\n", .{err});
+            log.warn("Failed to initialize connection: {any}", .{err});
             return;
         };
         defer conn.deinit();
 
         // Process messages from the client
         self.processMessages(&conn, client.stream) catch |err| {
-            std.debug.print("Connection error: {any}\n", .{err});
+            log.warn("Connection error: {any}", .{err});
         };
     }
 
