@@ -113,7 +113,7 @@ const serializeRow = executor_mod.serializeRow;
 const deserializeRow = executor_mod.deserializeRow;
 const evalExpr = executor_mod.evalExpr;
 
-// ── Shared Transaction Manager Registry ────────────────────────────────
+// ── Shared Transaction Manager Registry ──────────────────
 
 /// Global registry mapping database file paths to shared TransactionManager instances.
 /// This ensures multiple Database connections to the same file share a single TM,
@@ -198,7 +198,7 @@ pub fn cleanupGlobalTmRegistry() void {
     }
 }
 
-// ── View Column Extraction ──────────────────────────────────────────
+// ── View Column Extraction ──────────────────────
 
 const ColumnRef = planner_mod.ColumnRef;
 
@@ -286,7 +286,7 @@ fn resolveViewPlanColumns(
     }
 }
 
-// ── MVCC Row Detection ──────────────────────────────────────────────
+// ── MVCC Row Detection ───────────────────────
 
 /// Detect whether raw row data has an MVCC tuple header.
 /// Delegates to mvcc_mod.isVersionedRow for consistent detection.
@@ -294,7 +294,7 @@ fn isVersionedRowData(data: []const u8) bool {
     return mvcc_mod.isVersionedRow(data);
 }
 
-// ── Index Key Encoding ───────────────────────────────────────────────
+// ── Index Key Encoding ───────────────────────
 
 /// Resolve which native GIN operator class (if any) applies to a column type.
 /// Returns .none for types without a native opclass — callers must keep the
@@ -395,7 +395,7 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             return buf;
         },
         .array => |arr| {
-            // Serialize array elements as index key (format: element_count + concatenated element keys)
+            // Array index key: element count, then concatenated element keys.
             var total_size: usize = 4; // u32 element count
             var elem_keys = std.ArrayListUnmanaged([]u8){};
             defer {
@@ -440,7 +440,7 @@ fn stringToIndexKey(allocator: Allocator, s: []const u8) ![]u8 {
     return allocator.dupe(u8, s);
 }
 
-// ── Index Selection ──────────────────────────────────────────────────
+// ── Index Selection ────────────────────────
 
 /// Result of extracting an equality predicate `column = literal`.
 const EqualityPredicate = struct {
@@ -464,7 +464,10 @@ fn extractEqualityPredicate(expr: *const ast_mod.Expr) ?EqualityPredicate {
         // Only handle unqualified column refs (no table prefix) for now
         if (col.prefix != null) return null;
         if (op.right.* == .integer_literal) {
-            return .{ .column_name = col.name, .value_type = .{ .integer = op.right.integer_literal } };
+            return .{
+                .column_name = col.name,
+                .value_type = .{ .integer = op.right.integer_literal },
+            };
         }
         if (op.right.* == .string_literal) {
             return .{ .column_name = col.name, .value_type = .{ .text = op.right.string_literal } };
@@ -476,7 +479,10 @@ fn extractEqualityPredicate(expr: *const ast_mod.Expr) ?EqualityPredicate {
         const col = op.right.column_ref;
         if (col.prefix != null) return null;
         if (op.left.* == .integer_literal) {
-            return .{ .column_name = col.name, .value_type = .{ .integer = op.left.integer_literal } };
+            return .{
+                .column_name = col.name,
+                .value_type = .{ .integer = op.left.integer_literal },
+            };
         }
         if (op.left.* == .string_literal) {
             return .{ .column_name = col.name, .value_type = .{ .text = op.left.string_literal } };
@@ -507,9 +513,14 @@ fn extractGinPredicate(expr: *const ast_mod.Expr) ?GinPredicate {
     return .{ .column_name = col.name, .op = op.op, .rhs = op.right };
 }
 
-/// Check if all columns in scan_cols are covered by an index defined by key_column and included_cols.
+/// Check if all columns in scan_cols are covered by an index defined by key_column and
+/// included_cols.
 /// Case-insensitive column name matching.
-fn columnsAreCoveredByIndex(scan_cols: []const planner_mod.ColumnRef, key_column: []const u8, included_cols: []const []const u8) bool {
+fn columnsAreCoveredByIndex(
+    scan_cols: []const planner_mod.ColumnRef,
+    key_column: []const u8,
+    included_cols: []const []const u8,
+) bool {
     for (scan_cols) |col| {
         if (std.ascii.eqlIgnoreCase(col.column, key_column)) continue;
         var found = false;
@@ -630,7 +641,7 @@ fn collectOrLeaves(
     return true;
 }
 
-// ── Database ─────────────────────────────────────────────────────────
+// ── Database ───────────────────────────
 
 pub const OpenOptions = struct {
     page_size: u32 = 4096,
@@ -791,8 +802,14 @@ pub const PreparedStatement = struct {
         // - template_arena: read-only, contains cached plan
         // - execution_arena: writable, used for parameter substitution and temporary data
         // NOTE: Ownership of execution_arena is transferred to executePlanWithParams.
-        // It will be freed by the executor (in executeInsert/Update/Delete/Select/etc) even on error.
-        return self.db.executePlanWithParams(self.template_arena, execution_arena, self.plan, self.bound_params);
+        // It will be freed by the executor (in executeInsert/Update/Delete/Select/etc) even on
+        // error.
+        return self.db.executePlanWithParams(
+            self.template_arena,
+            execution_arena,
+            self.plan,
+            self.bound_params,
+        );
     }
 
     /// Close the prepared statement and free all resources.
@@ -1008,7 +1025,10 @@ fn tfsColName(tfs: PlanNode.TableFunctionScan, idx: usize, default: []const u8) 
     return if (idx < tfs.column_names.len) tfs.column_names[idx] else default;
 }
 
-fn tvfDefaultColumnNames(allocator: Allocator, func_name: []const u8) Allocator.Error![]const []const u8 {
+fn tvfDefaultColumnNames(
+    allocator: Allocator,
+    func_name: []const u8,
+) Allocator.Error![]const []const u8 {
     const static_names: []const []const u8 = blk: {
         if (std.mem.eql(u8, func_name, "json_each") or
             std.mem.eql(u8, func_name, "jsonb_each") or
@@ -1115,7 +1135,8 @@ const LateralJoinOp = struct {
                         const null_cols = try self.allocator.alloc([]const u8, right_count);
                         errdefer self.allocator.free(null_cols);
                         // Column name strings are owned by right_col_names (freed in close()).
-                        // Row.deinit() only frees the slice, not individual strings — no dupe needed.
+                        // Row.deinit() only frees the slice, not individual strings — no dupe
+                        // needed.
                         if (self.right_col_names) |rn| {
                             for (null_cols, rn) |*dest, src| dest.* = src;
                         }
@@ -1184,7 +1205,8 @@ const LateralJoinOp = struct {
             if (self.join_type != .left) {
                 if (self.right_iter) |*r| r.close();
                 self.right_iter = null;
-                // Free the MaterializedOp struct from right_ops (materialized data already freed by close)
+                // Free the MaterializedOp struct from right_ops (materialized data already freed by
+                // close)
                 if (self.right_ops.materialized) |m| self.allocator.destroy(m);
                 self.right_ops.materialized = null;
             }
@@ -1335,7 +1357,8 @@ pub const Database = struct {
         });
 
         // Load configuration from silica.conf if present
-        // Search standard locations: ./silica.conf, ~/.config/silica/silica.conf, /etc/silica/silica.conf
+        // Search standard locations: ./silica.conf, ~/.config/silica/silica.conf,
+        // /etc/silica/silica.conf
         if (findConfigFile(allocator) catch null) |config_path| {
             defer allocator.free(config_path);
 
@@ -1409,7 +1432,7 @@ pub const Database = struct {
         self.allocator.destroy(self.pager);
     }
 
-    // ── Prepared Statements ────────────────────────────────────────────
+    // ── Prepared Statements ──────────────────────
 
     /// Prepare a SQL statement for repeated execution.
     /// Performs tokenization, parsing, semantic analysis, and optimization once.
@@ -1615,7 +1638,10 @@ pub const Database = struct {
                 var max: ?u32 = null;
                 for (w.args) |arg| max = mergeMaxIndex(max, maxParamInExpr(arg));
                 // Max in PARTITION BY
-                for (w.partition_by) |part_expr| max = mergeMaxIndex(max, maxParamInExpr(part_expr));
+                for (w.partition_by) |part_expr| max = mergeMaxIndex(
+                    max,
+                    maxParamInExpr(part_expr),
+                );
                 // Max in ORDER BY
                 for (w.order_by) |order| max = mergeMaxIndex(max, maxParamInExpr(order.expr));
                 break :blk max;
@@ -1642,11 +1668,19 @@ pub const Database = struct {
     ) EngineError!QueryResult {
         // Substitute bound parameters in the plan tree.
         // Read from template_arena (cached plan), allocate new nodes in execution_arena.
-        const new_root = substituteParamsInNode(template_arena, execution_arena, plan.root, params) catch |err| {
+        const new_root = substituteParamsInNode(
+            template_arena,
+            execution_arena,
+            plan.root,
+            params,
+        ) catch |err| {
             // If substitution fails, free the execution_arena (executor hasn't taken ownership yet)
             execution_arena.deinit();
             self.allocator.destroy(execution_arena);
-            return if (err == error.OutOfMemory) EngineError.OutOfMemory else EngineError.ExecutionError;
+            return if (err == error.OutOfMemory)
+                EngineError.OutOfMemory
+            else
+                EngineError.ExecutionError;
         };
         const substituted_plan = LogicalPlan{
             .root = new_root,
@@ -1670,11 +1704,22 @@ pub const Database = struct {
             .scan, .empty, .table_function_scan => node.*, // No expressions to substitute
             .values_table_scan => |vts| blk: {
                 // Substitute bind parameters in VALUES table expressions
-                var new_rows = try execution_arena.allocator().alloc([]const *const ast_mod.Expr, vts.rows.len);
+                var new_rows = try execution_arena.allocator().alloc(
+                    []const *const ast_mod.Expr,
+                    vts.rows.len,
+                );
                 for (vts.rows, 0..) |row, i| {
-                    var new_row = try execution_arena.allocator().alloc(*const ast_mod.Expr, row.len);
+                    var new_row = try execution_arena.allocator().alloc(
+                        *const ast_mod.Expr,
+                        row.len,
+                    );
                     for (row, 0..) |expr, j| {
-                        new_row[j] = try substituteExpr(template_arena, execution_arena, expr, params);
+                        new_row[j] = try substituteExpr(
+                            template_arena,
+                            execution_arena,
+                            expr,
+                            params,
+                        );
                     }
                     new_rows[i] = new_row;
                 }
@@ -1686,11 +1731,22 @@ pub const Database = struct {
             },
             .values => |v| blk: {
                 // Substitute bind parameters in VALUES expressions
-                var new_rows = try execution_arena.allocator().alloc([]const *const ast_mod.Expr, v.rows.len);
+                var new_rows = try execution_arena.allocator().alloc(
+                    []const *const ast_mod.Expr,
+                    v.rows.len,
+                );
                 for (v.rows, 0..) |row, i| {
-                    var new_row = try execution_arena.allocator().alloc(*const ast_mod.Expr, row.len);
+                    var new_row = try execution_arena.allocator().alloc(
+                        *const ast_mod.Expr,
+                        row.len,
+                    );
                     for (row, 0..) |expr, j| {
-                        new_row[j] = try substituteExpr(template_arena, execution_arena, expr, params);
+                        new_row[j] = try substituteExpr(
+                            template_arena,
+                            execution_arena,
+                            expr,
+                            params,
+                        );
                     }
                     new_rows[i] = new_row;
                 }
@@ -1701,70 +1757,152 @@ pub const Database = struct {
                 } };
             },
             .filter => |f| .{ .filter = .{
-                .input = try substituteParamsInNode(template_arena, execution_arena, f.input, params),
-                .predicate = try substituteExpr(template_arena, execution_arena, f.predicate, params),
+                .input = try substituteParamsInNode(
+                    template_arena,
+                    execution_arena,
+                    f.input,
+                    params,
+                ),
+                .predicate = try substituteExpr(
+                    template_arena,
+                    execution_arena,
+                    f.predicate,
+                    params,
+                ),
             } },
             .project => |p| blk: {
-                var new_cols = try execution_arena.allocator().alloc(PlanNode.ProjectColumn, p.columns.len);
+                var new_cols = try execution_arena.allocator().alloc(
+                    PlanNode.ProjectColumn,
+                    p.columns.len,
+                );
                 for (p.columns, 0..) |col, i| {
                     new_cols[i] = .{
-                        .expr = try substituteExpr(template_arena, execution_arena, col.expr, params),
+                        .expr = try substituteExpr(
+                            template_arena,
+                            execution_arena,
+                            col.expr,
+                            params,
+                        ),
                         .alias = col.alias,
                     };
                 }
                 break :blk .{ .project = .{
-                    .input = try substituteParamsInNode(template_arena, execution_arena, p.input, params),
+                    .input = try substituteParamsInNode(
+                        template_arena,
+                        execution_arena,
+                        p.input,
+                        params,
+                    ),
                     .columns = new_cols,
                 } };
             },
             .join => |j| .{ .join = .{
                 .left = try substituteParamsInNode(template_arena, execution_arena, j.left, params),
-                .right = try substituteParamsInNode(template_arena, execution_arena, j.right, params),
+                .right = try substituteParamsInNode(
+                    template_arena,
+                    execution_arena,
+                    j.right,
+                    params,
+                ),
                 .join_type = j.join_type,
-                .on_condition = if (j.on_condition) |cond| try substituteExpr(template_arena, execution_arena, cond, params) else null,
+                .on_condition = if (j.on_condition) |cond| try substituteExpr(
+                    template_arena,
+                    execution_arena,
+                    cond,
+                    params,
+                ) else null,
                 .algorithm = j.algorithm,
             } },
             .sort => |s| .{
                 .sort = .{
-                    .input = try substituteParamsInNode(template_arena, execution_arena, s.input, params),
-                    .order_by = s.order_by, // OrderByItem contains expressions but they're rarely bind parameters
+                    .input = try substituteParamsInNode(
+                        template_arena,
+                        execution_arena,
+                        s.input,
+                        params,
+                    ),
+                    // OrderByItem contains expressions but they're rarely bind parameters
+                    .order_by = s.order_by,
                 },
             },
             .aggregate => |a| .{
                 .aggregate = .{
-                    .input = try substituteParamsInNode(template_arena, execution_arena, a.input, params),
+                    .input = try substituteParamsInNode(
+                        template_arena,
+                        execution_arena,
+                        a.input,
+                        params,
+                    ),
                     .group_by = a.group_by, // Could have bind parameters, but rare
-                    .aggregates = a.aggregates, // Aggregate args could have bind parameters, but rare
+                    // Aggregate args could have bind parameters, but rare
+                    .aggregates = a.aggregates,
                     .grouping_sets = a.grouping_sets,
                 },
             },
             .limit => |l| .{ .limit = .{
-                .input = try substituteParamsInNode(template_arena, execution_arena, l.input, params),
-                .limit_expr = if (l.limit_expr) |expr| try substituteExpr(template_arena, execution_arena, expr, params) else null,
-                .offset_expr = if (l.offset_expr) |expr| try substituteExpr(template_arena, execution_arena, expr, params) else null,
+                .input = try substituteParamsInNode(
+                    template_arena,
+                    execution_arena,
+                    l.input,
+                    params,
+                ),
+                .limit_expr = if (l.limit_expr) |expr| try substituteExpr(
+                    template_arena,
+                    execution_arena,
+                    expr,
+                    params,
+                ) else null,
+                .offset_expr = if (l.offset_expr) |expr| try substituteExpr(
+                    template_arena,
+                    execution_arena,
+                    expr,
+                    params,
+                ) else null,
                 .with_ties = l.with_ties,
                 .order_by = l.order_by,
             } },
             .distinct => |d| .{ .distinct = .{
-                .input = try substituteParamsInNode(template_arena, execution_arena, d.input, params),
+                .input = try substituteParamsInNode(
+                    template_arena,
+                    execution_arena,
+                    d.input,
+                    params,
+                ),
                 .on_exprs = d.on_exprs,
             } },
             .set_op => |s| .{ .set_op = .{
                 .op = s.op,
                 .left = try substituteParamsInNode(template_arena, execution_arena, s.left, params),
-                .right = try substituteParamsInNode(template_arena, execution_arena, s.right, params),
+                .right = try substituteParamsInNode(
+                    template_arena,
+                    execution_arena,
+                    s.right,
+                    params,
+                ),
             } },
             .window => |w| .{
                 .window = .{
-                    .input = try substituteParamsInNode(template_arena, execution_arena, w.input, params),
+                    .input = try substituteParamsInNode(
+                        template_arena,
+                        execution_arena,
+                        w.input,
+                        params,
+                    ),
                     .funcs = w.funcs, // Window function exprs could have bind parameters, but rare
                     .aliases = w.aliases,
                 },
             },
             .match_recognize => |mr| .{
                 .match_recognize = .{
-                    .input = try substituteParamsInNode(template_arena, execution_arena, mr.input, params),
-                    .spec = mr.spec, // PARTITION BY/ORDER BY/MEASURES/DEFINE exprs could have bind parameters, but rare
+                    .input = try substituteParamsInNode(
+                        template_arena,
+                        execution_arena,
+                        mr.input,
+                        params,
+                    ),
+                    // PARTITION BY/ORDER BY/MEASURES/DEFINE exprs could have bind parameters, but
+                    // rare
+                    .spec = mr.spec,
                     .alias = mr.alias,
                 },
             },
@@ -1773,7 +1911,8 @@ pub const Database = struct {
     }
 
     /// Recursively substitute bind parameters in an expression.
-    /// Reads from template expressions (via `expr`), allocates new expressions in `execution_arena`.
+    /// Reads from template expressions (via `expr`), allocates new expressions in
+    /// `execution_arena`.
     fn substituteExpr(
         template_arena: *AstArena,
         execution_arena: *AstArena,
@@ -1798,40 +1937,65 @@ pub const Database = struct {
                         // Value.compare() receives matching types (date vs date, not date vs text).
                         .date => |d| {
                             const s = try executor_mod.formatDate(alloc, d);
-                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            const inner = try execution_arena.create(
+                                ast_mod.Expr,
+                                .{ .string_literal = s },
+                            );
                             break :e .{ .cast = .{ .expr = inner, .target_type = .type_date } };
                         },
                         .time => |t| {
                             const s = try executor_mod.formatTime(alloc, t);
-                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            const inner = try execution_arena.create(
+                                ast_mod.Expr,
+                                .{ .string_literal = s },
+                            );
                             break :e .{ .cast = .{ .expr = inner, .target_type = .type_time } };
                         },
                         .timestamp => |ts| {
                             const s = try executor_mod.formatTimestamp(alloc, ts);
-                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
-                            break :e .{ .cast = .{ .expr = inner, .target_type = .type_timestamp } };
+                            const inner = try execution_arena.create(
+                                ast_mod.Expr,
+                                .{ .string_literal = s },
+                            );
+                            break :e .{
+                                .cast = .{ .expr = inner, .target_type = .type_timestamp },
+                            };
                         },
                         .interval => |iv| {
                             const s = try executor_mod.formatInterval(alloc, iv);
-                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            const inner = try execution_arena.create(
+                                ast_mod.Expr,
+                                .{ .string_literal = s },
+                            );
                             break :e .{ .cast = .{ .expr = inner, .target_type = .type_interval } };
                         },
                         .numeric => |n| {
                             const s = try executor_mod.formatNumeric(alloc, n);
-                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            const inner = try execution_arena.create(
+                                ast_mod.Expr,
+                                .{ .string_literal = s },
+                            );
                             break :e .{ .cast = .{ .expr = inner, .target_type = .type_numeric } };
                         },
                         .uuid => |u| {
                             const s = try executor_mod.formatUuid(alloc, u);
-                            const inner = try execution_arena.create(ast_mod.Expr, .{ .string_literal = s });
+                            const inner = try execution_arena.create(
+                                ast_mod.Expr,
+                                .{ .string_literal = s },
+                            );
                             break :e .{ .cast = .{ .expr = inner, .target_type = .type_uuid } };
                         },
-                        .array => |arr| break :e .{ .string_literal = try executor_mod.formatArray(alloc, arr) },
+                        .array => |arr| break :e .{
+                            .string_literal = try executor_mod.formatArray(alloc, arr),
+                        },
                         .tsvector => |v| break :e .{ .string_literal = v },
                         .tsquery => |v| break :e .{ .string_literal = v },
                     }
                 };
-                break :blk execution_arena.create(ast_mod.Expr, literal) catch return error.OutOfMemory;
+                break :blk execution_arena.create(
+                    ast_mod.Expr,
+                    literal,
+                ) catch return error.OutOfMemory;
             },
             .binary_op => |b| execution_arena.create(ast_mod.Expr, .{ .binary_op = .{
                 .op = b.op,
@@ -1843,7 +2007,10 @@ pub const Database = struct {
                 .operand = try substituteExpr(template_arena, execution_arena, u.operand, params),
             } }) catch return error.OutOfMemory,
             .function_call => |f| blk: {
-                var new_args = try execution_arena.allocator().alloc(*const ast_mod.Expr, f.args.len);
+                var new_args = try execution_arena.allocator().alloc(
+                    *const ast_mod.Expr,
+                    f.args.len,
+                );
                 for (f.args, 0..) |arg, i| {
                     new_args[i] = try substituteExpr(template_arena, execution_arena, arg, params);
                 }
@@ -1854,23 +2021,54 @@ pub const Database = struct {
                 } }) catch return error.OutOfMemory;
             },
             .case_expr => |c| blk: {
-                var new_whens = try execution_arena.allocator().alloc(ast_mod.WhenClause, c.when_clauses.len);
+                var new_whens = try execution_arena.allocator().alloc(
+                    ast_mod.WhenClause,
+                    c.when_clauses.len,
+                );
                 for (c.when_clauses, 0..) |when, i| {
                     new_whens[i] = .{
-                        .condition = try substituteExpr(template_arena, execution_arena, when.condition, params),
-                        .result = try substituteExpr(template_arena, execution_arena, when.result, params),
+                        .condition = try substituteExpr(
+                            template_arena,
+                            execution_arena,
+                            when.condition,
+                            params,
+                        ),
+                        .result = try substituteExpr(
+                            template_arena,
+                            execution_arena,
+                            when.result,
+                            params,
+                        ),
                     };
                 }
                 break :blk execution_arena.create(ast_mod.Expr, .{ .case_expr = .{
-                    .operand = if (c.operand) |op| try substituteExpr(template_arena, execution_arena, op, params) else null,
+                    .operand = if (c.operand) |op| try substituteExpr(
+                        template_arena,
+                        execution_arena,
+                        op,
+                        params,
+                    ) else null,
                     .when_clauses = new_whens,
-                    .else_expr = if (c.else_expr) |els| try substituteExpr(template_arena, execution_arena, els, params) else null,
+                    .else_expr = if (c.else_expr) |els| try substituteExpr(
+                        template_arena,
+                        execution_arena,
+                        els,
+                        params,
+                    ) else null,
                 } }) catch return error.OutOfMemory;
             },
             .in_list => |i| blk: {
-                var new_list = try execution_arena.allocator().alloc(*const ast_mod.Expr, i.list.len);
+                var new_list = try execution_arena.allocator().alloc(
+                    *const ast_mod.Expr,
+                    i.list.len,
+                );
                 for (i.list, 0..) |val, idx| {
-                    new_list[idx] = try substituteExpr(template_arena, execution_arena, val, params);
+                    new_list[idx] = try substituteExpr(
+                        template_arena,
+                        execution_arena,
+                        val,
+                        params,
+                    );
                 }
                 break :blk execution_arena.create(ast_mod.Expr, .{ .in_list = .{
                     .expr = try substituteExpr(template_arena, execution_arena, i.expr, params),
@@ -1898,11 +2096,12 @@ pub const Database = struct {
         };
     }
 
-    // ── Transaction Management ────────────────────────────────────────
+    // ── Transaction Management ─────────────────────
 
     /// Begin an explicit transaction with the given isolation level.
     pub fn beginTransaction(self: *Database, isolation: IsolationLevel) EngineError!void {
-        if (self.current_txn != null) return EngineError.TransactionError; // Already in a transaction
+        // Already in a transaction
+        if (self.current_txn != null) return EngineError.TransactionError;
 
         const xid = self.tm.begin(isolation) catch return EngineError.TransactionError;
         self.current_txn = .{
@@ -1973,7 +2172,7 @@ pub const Database = struct {
         self.current_txn = null;
     }
 
-    // ── Savepoint Management ──────────────────────────────────────────
+    // ── Savepoint Management ─────────────────────
 
     /// Create a named savepoint within the current transaction.
     pub fn createSavepoint(self: *Database, name: []const u8) EngineError!void {
@@ -1990,12 +2189,19 @@ pub const Database = struct {
         for (txn.savepoints.items, 0..) |*sp, idx| {
             if (std.mem.eql(u8, sp.name, name)) {
                 alloc.free(sp.name);
-                txn.savepoints.items[idx] = .{ .name = owned_name, .cid = cid, .undo_len = txn.undo_log.items.len };
+                txn.savepoints.items[idx] = .{
+                    .name = owned_name,
+                    .cid = cid,
+                    .undo_len = txn.undo_log.items.len,
+                };
                 return;
             }
         }
 
-        txn.savepoints.append(alloc, .{ .name = owned_name, .cid = cid, .undo_len = txn.undo_log.items.len }) catch return EngineError.OutOfMemory;
+        txn.savepoints.append(
+            alloc,
+            .{ .name = owned_name, .cid = cid, .undo_len = txn.undo_log.items.len },
+        ) catch return EngineError.OutOfMemory;
     }
 
     /// Release a savepoint (discard it, merging into parent transaction).
@@ -2051,7 +2257,13 @@ pub const Database = struct {
 
     /// Record an undo entry for physical rollback (issue #125 fix).
     /// No-op if no active transaction. Dupes all buffers for ownership.
-    pub fn recordUndo(self: *Database, table_name: []const u8, row_key: []const u8, before_data: ?[]const u8, after_data: ?[]const u8) !void {
+    pub fn recordUndo(
+        self: *Database,
+        table_name: []const u8,
+        row_key: []const u8,
+        before_data: ?[]const u8,
+        after_data: ?[]const u8,
+    ) !void {
         var txn = &(self.current_txn orelse return);
         const alloc = txn.allocator orelse return;
 
@@ -2120,7 +2332,13 @@ pub const Database = struct {
                 // Insert/restore the before state
                 try tree.insert(record.row_key, record.before_data.?);
                 // Re-insert index entries for the before state
-                try self.insertIndexEntries(record.table_name, &table_info, br.values, record.row_key, br.header);
+                try self.insertIndexEntries(
+                    record.table_name,
+                    &table_info,
+                    br.values,
+                    record.row_key,
+                    br.header,
+                );
             } else {
                 // before_data is null => this was a delete, physically remove from tree
                 tree.delete(record.row_key) catch {};
@@ -2210,7 +2428,11 @@ pub const Database = struct {
     }
 
     /// Execute CREATE TABLE AS SELECT (CTAS)
-    fn executeCTAS(self: *Database, arena: *AstArena, ctas: *const ast_mod.CreateTableStmt) EngineError!QueryResult {
+    fn executeCTAS(
+        self: *Database,
+        arena: *AstArena,
+        ctas: *const ast_mod.CreateTableStmt,
+    ) EngineError!QueryResult {
         defer {
             arena.deinit();
             self.allocator.destroy(arena);
@@ -2255,7 +2477,10 @@ pub const Database = struct {
         ops.* = .{};
         defer ops.deinit(self.allocator);
 
-        const iter = self.buildIterator(optimized.root, ops) catch return EngineError.ExecutionError;
+        const iter = self.buildIterator(
+            optimized.root,
+            ops,
+        ) catch return EngineError.ExecutionError;
 
         // Collect all rows from the SELECT and capture column names
         var result_rows = std.ArrayListUnmanaged([]Value){};
@@ -2292,7 +2517,10 @@ pub const Database = struct {
 
             // Capture column names from the first row (dupe the strings)
             if (captured_names == null and mutable_row.columns.len > 0) {
-                const names = self.allocator.alloc([]const u8, mutable_row.columns.len) catch return EngineError.OutOfMemory;
+                const names = self.allocator.alloc(
+                    []const u8,
+                    mutable_row.columns.len,
+                ) catch return EngineError.OutOfMemory;
                 var duped: usize = 0;
                 errdefer {
                     for (names[0..duped]) |n| self.allocator.free(n);
@@ -2305,7 +2533,10 @@ pub const Database = struct {
                 captured_names = names;
             }
 
-            const vals = self.allocator.alloc(Value, mutable_row.values.len) catch return EngineError.OutOfMemory;
+            const vals = self.allocator.alloc(
+                Value,
+                mutable_row.values.len,
+            ) catch return EngineError.OutOfMemory;
             for (mutable_row.values, 0..) |v, i| {
                 vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
             }
@@ -2362,10 +2593,19 @@ pub const Database = struct {
                     .expr => |e| if (e.alias) |alias|
                         self.allocator.dupe(u8, alias) catch return EngineError.OutOfMemory
                     else switch (e.value.*) {
-                        .column_ref => |cr| self.allocator.dupe(u8, cr.name) catch return EngineError.OutOfMemory,
-                        else => self.allocator.dupe(u8, "?column?") catch return EngineError.OutOfMemory,
+                        .column_ref => |cr| self.allocator.dupe(
+                            u8,
+                            cr.name,
+                        ) catch return EngineError.OutOfMemory,
+                        else => self.allocator.dupe(
+                            u8,
+                            "?column?",
+                        ) catch return EngineError.OutOfMemory,
                     },
-                    .all_columns, .table_all_columns => self.allocator.dupe(u8, "?column?") catch return EngineError.OutOfMemory,
+                    .all_columns, .table_all_columns => self.allocator.dupe(
+                        u8,
+                        "?column?",
+                    ) catch return EngineError.OutOfMemory,
                 };
                 errdefer self.allocator.free(col_name);
                 _ = col_idx;
@@ -2409,7 +2649,9 @@ pub const Database = struct {
 
         // Insert all collected rows into the new table
         if (result_rows.items.len > 0) {
-            var table_info = self.catalog.getTable(ctas.name) catch return EngineError.TableNotFound;
+            var table_info = self.catalog.getTable(
+                ctas.name,
+            ) catch return EngineError.TableNotFound;
             defer table_info.deinit(self.allocator);
 
             var tx_created = false;
@@ -2430,7 +2672,10 @@ pub const Database = struct {
 
             for (result_rows.items) |row_vals| {
                 // Serialize the row
-                const row_data = serializeRow(self.allocator, row_vals) catch return EngineError.OutOfMemory;
+                const row_data = serializeRow(
+                    self.allocator,
+                    row_vals,
+                ) catch return EngineError.OutOfMemory;
                 defer self.allocator.free(row_data);
 
                 // Generate key: 8-byte big-endian u64
@@ -2446,7 +2691,10 @@ pub const Database = struct {
 
             // Update root page ID in case of B+Tree split
             if (tree.root_page_id != table_info.data_root_page_id) {
-                self.updateTableRootPage(ctas.name, tree.root_page_id) catch return EngineError.StorageError;
+                self.updateTableRootPage(
+                    ctas.name,
+                    tree.root_page_id,
+                ) catch return EngineError.StorageError;
             }
         }
 
@@ -2521,7 +2769,7 @@ pub const Database = struct {
         }
     }
 
-    // ── SELECT execution ──────────────────────────────────────────────
+    // ── SELECT execution ───────────────────────
 
     fn executeSelect(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
         // On success, ownership of `arena` transfers to the returned QueryResult
@@ -2548,7 +2796,10 @@ pub const Database = struct {
         if (primary_table) |table_name| {
             const rls_enabled = self.catalog.isRLSEnabled(table_name) catch false;
             if (rls_enabled) {
-                const policies = self.catalog.listPoliciesForTable(self.allocator, table_name) catch null;
+                const policies = self.catalog.listPoliciesForTable(
+                    self.allocator,
+                    table_name,
+                ) catch null;
                 if (policies) |policy_names| {
                     defer {
                         for (policy_names) |name| self.allocator.free(name);
@@ -2559,7 +2810,10 @@ pub const Database = struct {
                     defer rls_conditions.deinit(self.allocator);
 
                     for (policy_names) |policy_name| {
-                        const policy_info = self.catalog.getPolicy(table_name, policy_name) catch continue;
+                        const policy_info = self.catalog.getPolicy(
+                            table_name,
+                            policy_name,
+                        ) catch continue;
                         defer policy_info.deinit();
 
                         if (policy_info.command != .select) continue;
@@ -2567,12 +2821,19 @@ pub const Database = struct {
                         if (policy_info.using_expr) |using_expr_str| {
                             // Dupe the SQL into the query arena so column name slices
                             // in the parsed AST remain valid after policy_info is freed.
-                            const owned_sql = arena.arena.allocator().dupe(u8, using_expr_str) catch continue;
+                            const owned_sql = arena.arena.allocator().dupe(
+                                u8,
+                                using_expr_str,
+                            ) catch continue;
 
                             var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
                             defer infra_alloc.deinit();
 
-                            var p = Parser.init(infra_alloc.allocator(), owned_sql, arena) catch continue;
+                            var p = Parser.init(
+                                infra_alloc.allocator(),
+                                owned_sql,
+                                arena,
+                            ) catch continue;
                             defer p.deinit();
 
                             if (p.parseExpr(0) catch null) |expr| {
@@ -2586,7 +2847,9 @@ pub const Database = struct {
                         // Build an OR expression from all conditions
                         var rls_filter: ?*const ast_mod.Expr = rls_conditions.items[0];
                         for (rls_conditions.items[1..]) |cond| {
-                            const or_expr = arena.arena.allocator().create(ast_mod.Expr) catch continue;
+                            const or_expr = arena.arena.allocator().create(
+                                ast_mod.Expr,
+                            ) catch continue;
                             or_expr.* = .{
                                 .binary_op = .{
                                     .left = rls_filter.?,
@@ -2599,7 +2862,9 @@ pub const Database = struct {
 
                         // Wrap plan in a Filter node if needed
                         if (rls_filter) |filter_expr| {
-                            const filter_node = arena.arena.allocator().create(PlanNode) catch return EngineError.OutOfMemory;
+                            const filter_node = arena.arena.allocator().create(
+                                PlanNode,
+                            ) catch return EngineError.OutOfMemory;
                             filter_node.* = .{
                                 .filter = .{
                                     .input = plan.root,
@@ -2613,7 +2878,10 @@ pub const Database = struct {
             }
         }
 
-        const iter = self.buildIterator(mutable_plan.root, ops) catch return EngineError.ExecutionError;
+        const iter = self.buildIterator(
+            mutable_plan.root,
+            ops,
+        ) catch return EngineError.ExecutionError;
         return .{
             .rows = iter,
             ._arena = arena,
@@ -2631,7 +2899,8 @@ pub const Database = struct {
         };
     }
 
-    /// Build an OR of all USING expressions from PERMISSIVE policies matching `command` for the table.
+    /// Build an OR of all USING expressions from PERMISSIVE policies matching `command` for the
+    /// table.
     /// Returns null if RLS is disabled or no matching USING expressions exist.
     fn buildRlsUsingExpr(
         self: *Database,
@@ -2642,7 +2911,10 @@ pub const Database = struct {
         const rls_enabled = self.catalog.isRLSEnabled(table_name) catch false;
         if (!rls_enabled) return null;
 
-        const policy_names = self.catalog.listPoliciesForTable(self.allocator, table_name) catch return null;
+        const policy_names = self.catalog.listPoliciesForTable(
+            self.allocator,
+            table_name,
+        ) catch return null;
         defer {
             for (policy_names) |name| self.allocator.free(name);
             self.allocator.free(policy_names);
@@ -2688,7 +2960,8 @@ pub const Database = struct {
         return result;
     }
 
-    /// Evaluate all PERMISSIVE policies' WITH CHECK expressions for INSERT/UPDATE on a candidate row.
+    /// Evaluate all PERMISSIVE policies' WITH CHECK expressions for INSERT/UPDATE on a candidate
+    /// row.
     /// Returns EngineError.RlsPolicyViolation if any WITH CHECK expression evaluates to false.
     fn checkRlsWithCheck(
         self: *Database,
@@ -2701,7 +2974,10 @@ pub const Database = struct {
         const rls_enabled = self.catalog.isRLSEnabled(table_name) catch false;
         if (!rls_enabled) return;
 
-        const policy_names = self.catalog.listPoliciesForTable(self.allocator, table_name) catch return;
+        const policy_names = self.catalog.listPoliciesForTable(
+            self.allocator,
+            table_name,
+        ) catch return;
         defer {
             for (policy_names) |name| self.allocator.free(name);
             self.allocator.free(policy_names);
@@ -2730,7 +3006,12 @@ pub const Database = struct {
                         .values = vals,
                         .allocator = self.allocator,
                     };
-                    const result = evalExpr(self.allocator, expr, &row, &self.catalog) catch continue;
+                    const result = evalExpr(
+                        self.allocator,
+                        expr,
+                        &row,
+                        &self.catalog,
+                    ) catch continue;
                     defer result.free(self.allocator);
                     if (!result.isTruthy()) {
                         return EngineError.RlsPolicyViolation;
@@ -2741,7 +3022,11 @@ pub const Database = struct {
     }
 
     /// Recursively translate a PlanNode tree into an executor RowIterator chain.
-    fn buildIterator(self: *Database, node: *const PlanNode, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildIterator(
+        self: *Database,
+        node: *const PlanNode,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         return switch (node.*) {
             .scan => |s| self.buildScan(s, ops),
             .table_function_scan => |tfs| self.buildTableFunctionScan(tfs, ops),
@@ -2761,15 +3046,30 @@ pub const Database = struct {
         };
     }
 
-    fn buildMatchRecognize(self: *Database, mr: PlanNode.MatchRecognize, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildMatchRecognize(
+        self: *Database,
+        mr: PlanNode.MatchRecognize,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const input = try self.buildIterator(mr.input, ops);
-        const match_recognize_op = self.allocator.create(executor_mod.MatchRecognizeOp) catch return EngineError.OutOfMemory;
-        match_recognize_op.* = executor_mod.MatchRecognizeOp.init(self.allocator, input, mr.spec, &self.catalog);
+        const match_recognize_op = self.allocator.create(
+            executor_mod.MatchRecognizeOp,
+        ) catch return EngineError.OutOfMemory;
+        match_recognize_op.* = executor_mod.MatchRecognizeOp.init(
+            self.allocator,
+            input,
+            mr.spec,
+            &self.catalog,
+        );
         ops.match_recognize = match_recognize_op;
         return match_recognize_op.iterator();
     }
 
-    fn buildScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         // Check if this scan references a materialized CTE
         if (ops.cte_materialized) |cte_map| {
             if (cte_map.get(scan.table)) |cte_mat| {
@@ -2791,7 +3091,9 @@ pub const Database = struct {
             return self.buildTableScan(scan, ops, &table_info);
         } else |_| {
             // Table not found — check if it's a view
-            const view_info = self.catalog.getView(scan.table) catch return EngineError.TableNotFound;
+            const view_info = self.catalog.getView(
+                scan.table,
+            ) catch return EngineError.TableNotFound;
             defer view_info.deinit();
             return self.buildViewScan(scan, ops, view_info);
         }
@@ -2810,7 +3112,12 @@ pub const Database = struct {
             }
 
             // Evaluate the array argument using the context row
-            const array_value = executor_mod.evalExpr(self.allocator, tfs.args[0], &context_row, null) catch
+            const array_value = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[0],
+                &context_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
 
             if (array_value != .array) {
@@ -2821,7 +3128,10 @@ pub const Database = struct {
             const unnest_ctx_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
             const col_names = try self.allocator.alloc([]const u8, unnest_ctx_n_cols);
             col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "unnest"));
-            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
+            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(
+                u8,
+                tfsColName(tfs, 1, "ordinality"),
+            );
 
             var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
             for (array_value.array, 1..) |elem, ord| {
@@ -2851,16 +3161,31 @@ pub const Database = struct {
             }
 
             // Evaluate the arguments using the context row
-            const start_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &context_row, null) catch
+            const start_val = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[0],
+                &context_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
             defer start_val.free(self.allocator);
 
-            const stop_val = executor_mod.evalExpr(self.allocator, tfs.args[1], &context_row, null) catch
+            const stop_val = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[1],
+                &context_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
             defer stop_val.free(self.allocator);
 
             const step_val = if (tfs.args.len > 2)
-                executor_mod.evalExpr(self.allocator, tfs.args[2], &context_row, null) catch return EngineError.ExecutionError
+                executor_mod.evalExpr(
+                    self.allocator,
+                    tfs.args[2],
+                    &context_row,
+                    null,
+                ) catch return EngineError.ExecutionError
             else
                 null;
             defer if (step_val) |sv| sv.free(self.allocator);
@@ -2868,11 +3193,16 @@ pub const Database = struct {
             const gs_ctx_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
             const col_names = try self.allocator.alloc([]const u8, gs_ctx_n_cols);
             col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "generate_series"));
-            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
+            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(
+                u8,
+                tfsColName(tfs, 1, "ordinality"),
+            );
 
             var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
 
-            const is_float = start_val == .real or stop_val == .real or (step_val != null and step_val.? == .real);
+            const is_float =
+                start_val == .real or stop_val == .real or
+                (step_val != null and step_val.? == .real);
 
             if (is_float) {
                 const start = switch (start_val) {
@@ -2983,7 +3313,12 @@ pub const Database = struct {
             if (tfs.args.len != 1) return EngineError.ExecutionError;
 
             // Evaluate with context row instead of empty row
-            const json_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &context_row, null) catch
+            const json_val = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[0],
+                &context_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
             defer json_val.free(self.allocator);
 
@@ -2995,7 +3330,10 @@ pub const Database = struct {
                 const col_names = try self.allocator.alloc([]const u8, je_ctx_n_cols);
                 col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "key"));
                 col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "value"));
-                if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(u8, tfsColName(tfs, 2, "ordinality"));
+                if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(
+                    u8,
+                    tfsColName(tfs, 2, "ordinality"),
+                );
                 const mat_op = try self.allocator.create(MaterializedOp);
                 mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
                 ops.materialized = mat_op;
@@ -3011,7 +3349,10 @@ pub const Database = struct {
             const col_names = try self.allocator.alloc([]const u8, je_ctx_n_cols);
             col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "key"));
             col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "value"));
-            if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(u8, tfsColName(tfs, 2, "ordinality"));
+            if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(
+                u8,
+                tfsColName(tfs, 2, "ordinality"),
+            );
 
             var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
 
@@ -3024,7 +3365,10 @@ pub const Database = struct {
                         var iter = obj.iterator();
                         var ord: i64 = 1;
                         while (iter.next()) |entry| {
-                            const vals = try self.allocator.alloc(executor_mod.Value, je_ctx_n_cols);
+                            const vals = try self.allocator.alloc(
+                                executor_mod.Value,
+                                je_ctx_n_cols,
+                            );
                             vals[0] = .{ .text = try self.allocator.dupe(u8, entry.key_ptr.*) };
                             vals[1] = blk: {
                                 const v = entry.value_ptr.*;
@@ -3032,23 +3376,55 @@ pub const Database = struct {
                                     // _text variant: return bare text, null for null
                                     switch (v) {
                                         .null => break :blk executor_mod.Value.null_value,
-                                        .string => |s| break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, s) },
-                                        .integer => |i| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{i}) },
-                                        .float => |f| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) },
-                                        .bool => |b| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{s}", .{if (b) "true" else "false"}) },
+                                        .string => |s| break :blk executor_mod.Value{
+                                            .text = try self.allocator.dupe(u8, s),
+                                        },
+                                        .integer => |i| break :blk executor_mod.Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{d}",
+                                                .{i},
+                                            ),
+                                        },
+                                        .float => |f| break :blk executor_mod.Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{d}",
+                                                .{f},
+                                            ),
+                                        },
+                                        .bool => |b| break :blk executor_mod.Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{s}",
+                                                .{if (b) "true" else "false"},
+                                            ),
+                                        },
                                         else => {
                                             var buf = std.ArrayListUnmanaged(u8){};
                                             defer buf.deinit(self.allocator);
-                                            try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(v, .{})});
-                                            break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                            try std.fmt.format(
+                                                buf.writer(self.allocator),
+                                                "{f}",
+                                                .{std.json.fmt(v, .{})},
+                                            );
+                                            break :blk executor_mod.Value{
+                                                .text = try self.allocator.dupe(u8, buf.items),
+                                            };
                                         },
                                     }
                                 } else {
                                     // json_each: serialize value back to JSON text
                                     var buf = std.ArrayListUnmanaged(u8){};
                                     defer buf.deinit(self.allocator);
-                                    try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(v, .{})});
-                                    break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                    try std.fmt.format(
+                                        buf.writer(self.allocator),
+                                        "{f}",
+                                        .{std.json.fmt(v, .{})},
+                                    );
+                                    break :blk executor_mod.Value{
+                                        .text = try self.allocator.dupe(u8, buf.items),
+                                    };
                                 }
                             };
                             if (tfs.with_ordinality) {
@@ -3086,7 +3462,12 @@ pub const Database = struct {
             if (tfs.args.len != 1) return EngineError.ExecutionError;
 
             // Evaluate with context row
-            const json_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &context_row, null) catch
+            const json_val = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[0],
+                &context_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
             defer json_val.free(self.allocator);
 
@@ -3097,7 +3478,10 @@ pub const Database = struct {
             if (json_val == .null_value) {
                 const col_names = try self.allocator.alloc([]const u8, jae_ctx_n_cols);
                 col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "value"));
-                if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
+                if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(
+                    u8,
+                    tfsColName(tfs, 1, "ordinality"),
+                );
                 const mat_op = try self.allocator.create(MaterializedOp);
                 mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
                 ops.materialized = mat_op;
@@ -3112,7 +3496,10 @@ pub const Database = struct {
 
             const col_names = try self.allocator.alloc([]const u8, jae_ctx_n_cols);
             col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "value"));
-            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
+            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(
+                u8,
+                tfsColName(tfs, 1, "ordinality"),
+            );
 
             var rows = std.ArrayListUnmanaged([]executor_mod.Value){};
 
@@ -3124,27 +3511,62 @@ pub const Database = struct {
                     .array => |arr| {
                         var ord: i64 = 1;
                         for (arr.items) |elem| {
-                            const vals = try self.allocator.alloc(executor_mod.Value, jae_ctx_n_cols);
+                            const vals = try self.allocator.alloc(
+                                executor_mod.Value,
+                                jae_ctx_n_cols,
+                            );
                             vals[0] = blk: {
                                 if (as_text) {
                                     switch (elem) {
                                         .null => break :blk executor_mod.Value.null_value,
-                                        .string => |s| break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, s) },
-                                        .integer => |i| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{i}) },
-                                        .float => |f| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) },
-                                        .bool => |b| break :blk executor_mod.Value{ .text = try std.fmt.allocPrint(self.allocator, "{s}", .{if (b) "true" else "false"}) },
+                                        .string => |s| break :blk executor_mod.Value{
+                                            .text = try self.allocator.dupe(u8, s),
+                                        },
+                                        .integer => |i| break :blk executor_mod.Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{d}",
+                                                .{i},
+                                            ),
+                                        },
+                                        .float => |f| break :blk executor_mod.Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{d}",
+                                                .{f},
+                                            ),
+                                        },
+                                        .bool => |b| break :blk executor_mod.Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{s}",
+                                                .{if (b) "true" else "false"},
+                                            ),
+                                        },
                                         else => {
                                             var buf = std.ArrayListUnmanaged(u8){};
                                             defer buf.deinit(self.allocator);
-                                            try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(elem, .{})});
-                                            break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                            try std.fmt.format(
+                                                buf.writer(self.allocator),
+                                                "{f}",
+                                                .{std.json.fmt(elem, .{})},
+                                            );
+                                            break :blk executor_mod.Value{
+                                                .text = try self.allocator.dupe(u8, buf.items),
+                                            };
                                         },
                                     }
                                 } else {
                                     var buf = std.ArrayListUnmanaged(u8){};
                                     defer buf.deinit(self.allocator);
-                                    try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(elem, .{})});
-                                    break :blk executor_mod.Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                    try std.fmt.format(
+                                        buf.writer(self.allocator),
+                                        "{f}",
+                                        .{std.json.fmt(elem, .{})},
+                                    );
+                                    break :blk executor_mod.Value{
+                                        .text = try self.allocator.dupe(u8, buf.items),
+                                    };
                                 }
                             };
                             if (tfs.with_ordinality) {
@@ -3174,7 +3596,11 @@ pub const Database = struct {
         return EngineError.ExecutionError;
     }
 
-    fn buildTableFunctionScan(self: *Database, tfs: PlanNode.TableFunctionScan, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildTableFunctionScan(
+        self: *Database,
+        tfs: PlanNode.TableFunctionScan,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         // Handle unnest() function
         if (std.mem.eql(u8, tfs.function_name, "unnest")) {
             // unnest() requires exactly 1 argument (the array)
@@ -3191,7 +3617,12 @@ pub const Database = struct {
             };
 
             // Evaluate the array argument
-            const array_value = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
+            const array_value = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[0],
+                &empty_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
 
             // Ensure it's actually an array
@@ -3247,16 +3678,31 @@ pub const Database = struct {
             };
 
             // Evaluate the arguments
-            const start_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
+            const start_val = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[0],
+                &empty_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
             defer start_val.free(self.allocator);
 
-            const stop_val = executor_mod.evalExpr(self.allocator, tfs.args[1], &empty_row, null) catch
+            const stop_val = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[1],
+                &empty_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
             defer stop_val.free(self.allocator);
 
             const step_val = if (tfs.args.len > 2)
-                executor_mod.evalExpr(self.allocator, tfs.args[2], &empty_row, null) catch return EngineError.ExecutionError
+                executor_mod.evalExpr(
+                    self.allocator,
+                    tfs.args[2],
+                    &empty_row,
+                    null,
+                ) catch return EngineError.ExecutionError
             else
                 null;
             defer if (step_val) |sv| sv.free(self.allocator);
@@ -3272,7 +3718,9 @@ pub const Database = struct {
             var rows = std.ArrayListUnmanaged([]Value){};
 
             // Check if we're dealing with floats or integers
-            const is_float = start_val == .real or stop_val == .real or (step_val != null and step_val.? == .real);
+            const is_float =
+                start_val == .real or stop_val == .real or
+                (step_val != null and step_val.? == .real);
 
             if (is_float) {
                 // Float path
@@ -3380,7 +3828,12 @@ pub const Database = struct {
             if (tfs.args.len != 1) return EngineError.ExecutionError;
 
             var empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
-            const json_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
+            const json_val = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[0],
+                &empty_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
             defer json_val.free(self.allocator);
 
@@ -3392,7 +3845,10 @@ pub const Database = struct {
                 const col_names = try self.allocator.alloc([]const u8, je_n_cols);
                 col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "key"));
                 col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "value"));
-                if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(u8, tfsColName(tfs, 2, "ordinality"));
+                if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(
+                    u8,
+                    tfsColName(tfs, 2, "ordinality"),
+                );
                 const mat_op = try self.allocator.create(MaterializedOp);
                 mat_op.* = MaterializedOp.init(self.allocator, col_names, &.{});
                 ops.materialized = mat_op;
@@ -3408,7 +3864,10 @@ pub const Database = struct {
             const col_names = try self.allocator.alloc([]const u8, je_n_cols);
             col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "key"));
             col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "value"));
-            if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(u8, tfsColName(tfs, 2, "ordinality"));
+            if (tfs.with_ordinality) col_names[2] = try self.allocator.dupe(
+                u8,
+                tfsColName(tfs, 2, "ordinality"),
+            );
 
             var rows = std.ArrayListUnmanaged([]Value){};
 
@@ -3429,23 +3888,55 @@ pub const Database = struct {
                                     // _text variant: return bare text, null for null
                                     switch (v) {
                                         .null => break :blk Value.null_value,
-                                        .string => |s| break :blk Value{ .text = try self.allocator.dupe(u8, s) },
-                                        .integer => |i| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{i}) },
-                                        .float => |f| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) },
-                                        .bool => |b| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{s}", .{if (b) "true" else "false"}) },
+                                        .string => |s| break :blk Value{
+                                            .text = try self.allocator.dupe(u8, s),
+                                        },
+                                        .integer => |i| break :blk Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{d}",
+                                                .{i},
+                                            ),
+                                        },
+                                        .float => |f| break :blk Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{d}",
+                                                .{f},
+                                            ),
+                                        },
+                                        .bool => |b| break :blk Value{
+                                            .text = try std.fmt.allocPrint(
+                                                self.allocator,
+                                                "{s}",
+                                                .{if (b) "true" else "false"},
+                                            ),
+                                        },
                                         else => {
                                             var buf = std.ArrayListUnmanaged(u8){};
                                             defer buf.deinit(self.allocator);
-                                            try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(v, .{})});
-                                            break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                            try std.fmt.format(
+                                                buf.writer(self.allocator),
+                                                "{f}",
+                                                .{std.json.fmt(v, .{})},
+                                            );
+                                            break :blk Value{
+                                                .text = try self.allocator.dupe(u8, buf.items),
+                                            };
                                         },
                                     }
                                 } else {
                                     // json_each: serialize value back to JSON text
                                     var buf = std.ArrayListUnmanaged(u8){};
                                     defer buf.deinit(self.allocator);
-                                    try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(v, .{})});
-                                    break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                    try std.fmt.format(
+                                        buf.writer(self.allocator),
+                                        "{f}",
+                                        .{std.json.fmt(v, .{})},
+                                    );
+                                    break :blk Value{
+                                        .text = try self.allocator.dupe(u8, buf.items),
+                                    };
                                 }
                             };
                             if (tfs.with_ordinality) {
@@ -3471,7 +3962,8 @@ pub const Database = struct {
             return mat_op.iterator();
         }
 
-        // Handle json_array_elements() and jsonb_array_elements() — expand JSON array into value rows
+        // Handle json_array_elements() and jsonb_array_elements() — expand JSON array into value
+        // rows
         if (std.mem.eql(u8, tfs.function_name, "json_array_elements") or
             std.mem.eql(u8, tfs.function_name, "jsonb_array_elements") or
             std.mem.eql(u8, tfs.function_name, "json_array_elements_text") or
@@ -3482,7 +3974,12 @@ pub const Database = struct {
             if (tfs.args.len != 1) return EngineError.ExecutionError;
 
             var empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
-            const json_val = executor_mod.evalExpr(self.allocator, tfs.args[0], &empty_row, null) catch
+            const json_val = executor_mod.evalExpr(
+                self.allocator,
+                tfs.args[0],
+                &empty_row,
+                null,
+            ) catch
                 return EngineError.ExecutionError;
             defer json_val.free(self.allocator);
 
@@ -3490,7 +3987,10 @@ pub const Database = struct {
             const jae_n_cols: usize = if (tfs.with_ordinality) 2 else 1;
             const col_names = try self.allocator.alloc([]const u8, jae_n_cols);
             col_names[0] = try self.allocator.dupe(u8, tfsColName(tfs, 0, "value"));
-            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(u8, tfsColName(tfs, 1, "ordinality"));
+            if (tfs.with_ordinality) col_names[1] = try self.allocator.dupe(
+                u8,
+                tfsColName(tfs, 1, "ordinality"),
+            );
 
             var rows = std.ArrayListUnmanaged([]Value){};
 
@@ -3506,7 +4006,12 @@ pub const Database = struct {
                     },
                 };
 
-                if (std.json.parseFromSlice(std.json.Value, self.allocator, json_text, .{})) |parsed| {
+                if (std.json.parseFromSlice(
+                    std.json.Value,
+                    self.allocator,
+                    json_text,
+                    .{},
+                )) |parsed| {
                     defer parsed.deinit();
 
                     switch (parsed.value) {
@@ -3518,22 +4023,54 @@ pub const Database = struct {
                                     if (as_text) {
                                         switch (item) {
                                             .null => break :blk Value.null_value,
-                                            .string => |s| break :blk Value{ .text = try self.allocator.dupe(u8, s) },
-                                            .integer => |i| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{i}) },
-                                            .float => |f| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) },
-                                            .bool => |b| break :blk Value{ .text = try std.fmt.allocPrint(self.allocator, "{s}", .{if (b) "true" else "false"}) },
+                                            .string => |s| break :blk Value{
+                                                .text = try self.allocator.dupe(u8, s),
+                                            },
+                                            .integer => |i| break :blk Value{
+                                                .text = try std.fmt.allocPrint(
+                                                    self.allocator,
+                                                    "{d}",
+                                                    .{i},
+                                                ),
+                                            },
+                                            .float => |f| break :blk Value{
+                                                .text = try std.fmt.allocPrint(
+                                                    self.allocator,
+                                                    "{d}",
+                                                    .{f},
+                                                ),
+                                            },
+                                            .bool => |b| break :blk Value{
+                                                .text = try std.fmt.allocPrint(
+                                                    self.allocator,
+                                                    "{s}",
+                                                    .{if (b) "true" else "false"},
+                                                ),
+                                            },
                                             else => {
                                                 var buf = std.ArrayListUnmanaged(u8){};
                                                 defer buf.deinit(self.allocator);
-                                                try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(item, .{})});
-                                                break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                                try std.fmt.format(
+                                                    buf.writer(self.allocator),
+                                                    "{f}",
+                                                    .{std.json.fmt(item, .{})},
+                                                );
+                                                break :blk Value{
+                                                    .text = try self.allocator.dupe(u8, buf.items),
+                                                };
                                             },
                                         }
                                     } else {
                                         var buf = std.ArrayListUnmanaged(u8){};
                                         defer buf.deinit(self.allocator);
-                                        try std.fmt.format(buf.writer(self.allocator), "{f}", .{std.json.fmt(item, .{})});
-                                        break :blk Value{ .text = try self.allocator.dupe(u8, buf.items) };
+                                        try std.fmt.format(
+                                            buf.writer(self.allocator),
+                                            "{f}",
+                                            .{std.json.fmt(item, .{})},
+                                        );
+                                        break :blk Value{
+                                            .text = try self.allocator.dupe(u8, buf.items),
+                                        };
                                     }
                                 };
                                 if (tfs.with_ordinality) {
@@ -3564,7 +4101,11 @@ pub const Database = struct {
         return EngineError.ExecutionError;
     }
 
-    fn buildValuesTableScan(self: *Database, vts: PlanNode.ValuesTableScan, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildValuesTableScan(
+        self: *Database,
+        vts: PlanNode.ValuesTableScan,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const alloc = self.allocator;
 
         // Determine number of columns
@@ -3615,7 +4156,12 @@ pub const Database = struct {
         return mat_op.iterator();
     }
 
-    fn buildViewScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, view_info: catalog_mod.Catalog.ViewInfo) EngineError!RowIterator {
+    fn buildViewScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        ops: *OperatorChain,
+        view_info: catalog_mod.Catalog.ViewInfo,
+    ) EngineError!RowIterator {
         // Phase 1: Parse and execute the view's SQL (uses temporary arenas)
         var rows = std.ArrayListUnmanaged([]Value){};
         var first_row_cols: ?[]const []const u8 = null;
@@ -3628,10 +4174,16 @@ pub const Database = struct {
             var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
             defer infra_alloc.deinit();
 
-            var p = Parser.init(infra_alloc.allocator(), view_info.sql, &view_arena) catch return EngineError.ParseError;
+            var p = Parser.init(
+                infra_alloc.allocator(),
+                view_info.sql,
+                &view_arena,
+            ) catch return EngineError.ParseError;
             defer p.deinit();
 
-            const stmt = (p.parseStatement() catch return EngineError.ParseError) orelse return EngineError.ParseError;
+            const stmt =
+                (p.parseStatement() catch return EngineError.ParseError) orelse
+                return EngineError.ParseError;
 
             const view_select = switch (stmt) {
                 .create_view => |cv| cv.select,
@@ -3641,28 +4193,41 @@ pub const Database = struct {
 
             const provider = self.schemaProvider();
             var plnr = Planner.init(&view_arena, provider);
-            const view_plan = plnr.plan(.{ .select = view_select }) catch return EngineError.PlanError;
+            const view_plan = plnr.plan(
+                .{ .select = view_select },
+            ) catch return EngineError.PlanError;
 
             var opt = Optimizer.init(&view_arena);
             const optimized = opt.optimize(view_plan) catch return EngineError.PlanError;
 
-            const view_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+            const view_ops = self.allocator.create(
+                OperatorChain,
+            ) catch return EngineError.OutOfMemory;
             view_ops.* = .{};
 
-            var view_iter = self.buildIterator(optimized.root, view_ops) catch return EngineError.ExecutionError;
+            var view_iter = self.buildIterator(
+                optimized.root,
+                view_ops,
+            ) catch return EngineError.ExecutionError;
 
             // Materialize all rows
             while (view_iter.next() catch null) |row_data| {
                 var row = row_data;
                 if (first_row_cols == null) {
                     // Save column names from the first row (duped to survive arena cleanup)
-                    const saved = self.allocator.alloc([]const u8, row.columns.len) catch return EngineError.OutOfMemory;
+                    const saved = self.allocator.alloc(
+                        []const u8,
+                        row.columns.len,
+                    ) catch return EngineError.OutOfMemory;
                     for (row.columns, 0..) |c, i| {
                         saved[i] = self.allocator.dupe(u8, c) catch return EngineError.OutOfMemory;
                     }
                     first_row_cols = saved;
                 }
-                const vals = self.allocator.alloc(Value, row.values.len) catch return EngineError.OutOfMemory;
+                const vals = self.allocator.alloc(
+                    Value,
+                    row.values.len,
+                ) catch return EngineError.OutOfMemory;
                 for (row.values, 0..) |v, i| {
                     vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
                 }
@@ -3680,8 +4245,13 @@ pub const Database = struct {
                 for (inner_cols) |c| self.allocator.free(@constCast(c));
                 self.allocator.free(inner_cols);
             }
-            break :blk self.buildViewColNames(inner_cols, scan.alias, view_info.column_names) catch return EngineError.OutOfMemory;
-        } else self.buildViewColNamesFromScan(scan, view_info.column_names) catch return EngineError.OutOfMemory;
+            break :blk self.buildViewColNames(
+                inner_cols,
+                scan.alias,
+                view_info.column_names,
+            ) catch return EngineError.OutOfMemory;
+        } else self.buildViewColNamesFromScan(scan, view_info.column_names) catch
+            return EngineError.OutOfMemory;
 
         // Phase 3: Create MaterializedOp
         const mat_op = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
@@ -3696,14 +4266,21 @@ pub const Database = struct {
     }
 
     /// Build a scan for pg_stat_activity system table
-    fn buildStatActivityScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildStatActivityScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         _ = scan; // scan.alias not used for now — column names are always pg_stat_activity.*
 
         // Create StatActivityScanOp
-        const stat_op = self.allocator.create(executor_mod.StatActivityScanOp) catch return EngineError.OutOfMemory;
+        const stat_op = self.allocator.create(
+            executor_mod.StatActivityScanOp,
+        ) catch return EngineError.OutOfMemory;
         stat_op.* = executor_mod.StatActivityScanOp.init(self.allocator);
 
-        // Set the tracker from OperatorChain (will be null in embedded mode, populated in server mode)
+        // Set the tracker from OperatorChain (will be null in embedded mode, populated in server
+        // mode)
         if (ops.activity_tracker) |tracker| {
             stat_op.setTracker(tracker);
         }
@@ -3715,11 +4292,17 @@ pub const Database = struct {
     }
 
     /// Build a scan for pg_locks system table
-    fn buildLocksScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildLocksScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         _ = scan; // scan.alias not used for now — column names are always pg_locks.*
 
         // Create LocksScanOp
-        const locks_op = self.allocator.create(executor_mod.LocksScanOp) catch return EngineError.OutOfMemory;
+        const locks_op = self.allocator.create(
+            executor_mod.LocksScanOp,
+        ) catch return EngineError.OutOfMemory;
         locks_op.* = executor_mod.LocksScanOp.init(self.allocator);
 
         // Set the lock manager (always available in Database)
@@ -3733,13 +4316,19 @@ pub const Database = struct {
 
     /// Build column names for a view from the inner query's row columns.
     /// Applies view column aliases and scan alias prefix.
-    fn buildViewColNames(self: *Database, row_cols: []const []const u8, scan_alias: ?[]const u8, view_col_names: []const []const u8) ![]const []const u8 {
+    fn buildViewColNames(
+        self: *Database,
+        row_cols: []const []const u8,
+        scan_alias: ?[]const u8,
+        view_col_names: []const []const u8,
+    ) ![]const []const u8 {
         const num_cols = row_cols.len;
         const cols = try self.allocator.alloc([]const u8, num_cols);
         errdefer self.allocator.free(cols);
 
         for (0..num_cols) |i| {
-            // Use view column alias if available, else strip any table prefix from inner column name
+            // Use view column alias if available, else strip any table prefix from inner column
+            // name
             const base_name = if (i < view_col_names.len)
                 view_col_names[i]
             else blk: {
@@ -3761,7 +4350,11 @@ pub const Database = struct {
     }
 
     /// Build column names for an empty view result from the scan's column refs.
-    fn buildViewColNamesFromScan(self: *Database, scan: PlanNode.Scan, view_col_names: []const []const u8) ![]const []const u8 {
+    fn buildViewColNamesFromScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        view_col_names: []const []const u8,
+    ) ![]const []const u8 {
         const num_cols = scan.columns.len;
         const cols = try self.allocator.alloc([]const u8, num_cols);
         errdefer self.allocator.free(cols);
@@ -3781,10 +4374,14 @@ pub const Database = struct {
         return cols;
     }
 
-    // ── CTE execution ──────────────────────────────────────────────────
+    // ── CTE execution ────────────────────────
 
     /// Materialize all CTEs in definition order and store in ops.cte_materialized.
-    fn materializeCtes(self: *Database, ctes: []const planner_mod.CtePlan, ops: *OperatorChain) EngineError!void {
+    fn materializeCtes(
+        self: *Database,
+        ctes: []const planner_mod.CtePlan,
+        ops: *OperatorChain,
+    ) EngineError!void {
         var cte_map = std.StringHashMapUnmanaged(*MaterializedOp){};
 
         for (ctes) |cte| {
@@ -3794,14 +4391,19 @@ pub const Database = struct {
             }
 
             // Create a sub-operator chain for this CTE's query
-            const cte_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+            const cte_ops = self.allocator.create(
+                OperatorChain,
+            ) catch return EngineError.OutOfMemory;
             cte_ops.* = .{};
             // Propagate parent CTE map so later CTEs can reference earlier ones
             cte_ops.cte_materialized = cte_map;
 
             ops.cte_ops.append(self.allocator, cte_ops) catch return EngineError.OutOfMemory;
 
-            var cte_iter = self.buildIterator(cte.plan, cte_ops) catch return EngineError.ExecutionError;
+            var cte_iter = self.buildIterator(
+                cte.plan,
+                cte_ops,
+            ) catch return EngineError.ExecutionError;
 
             // Materialize all rows from the CTE query
             var rows = std.ArrayListUnmanaged([]Value){};
@@ -3810,13 +4412,19 @@ pub const Database = struct {
             while (cte_iter.next() catch return EngineError.ExecutionError) |row_data| {
                 var row = row_data;
                 if (first_row_cols == null) {
-                    const saved = self.allocator.alloc([]const u8, row.columns.len) catch return EngineError.OutOfMemory;
+                    const saved = self.allocator.alloc(
+                        []const u8,
+                        row.columns.len,
+                    ) catch return EngineError.OutOfMemory;
                     for (row.columns, 0..) |c, i| {
                         saved[i] = self.allocator.dupe(u8, c) catch return EngineError.OutOfMemory;
                     }
                     first_row_cols = saved;
                 }
-                const vals = self.allocator.alloc(Value, row.values.len) catch return EngineError.OutOfMemory;
+                const vals = self.allocator.alloc(
+                    Value,
+                    row.values.len,
+                ) catch return EngineError.OutOfMemory;
                 for (row.values, 0..) |v, i| {
                     vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
                 }
@@ -3832,14 +4440,20 @@ pub const Database = struct {
                     for (inner) |c| self.allocator.free(@constCast(c));
                     self.allocator.free(inner);
                 }
-                const names = self.allocator.alloc([]const u8, cte.column_names.len) catch return EngineError.OutOfMemory;
+                const names = self.allocator.alloc(
+                    []const u8,
+                    cte.column_names.len,
+                ) catch return EngineError.OutOfMemory;
                 for (cte.column_names, 0..) |name, i| {
                     names[i] = self.allocator.dupe(u8, name) catch return EngineError.OutOfMemory;
                 }
                 break :blk names;
             } else if (first_row_cols) |inner_cols| blk: {
                 // Strip table prefixes from inner column names
-                const names = self.allocator.alloc([]const u8, inner_cols.len) catch return EngineError.OutOfMemory;
+                const names = self.allocator.alloc(
+                    []const u8,
+                    inner_cols.len,
+                ) catch return EngineError.OutOfMemory;
                 for (inner_cols, 0..) |c, i| {
                     const base = if (std.mem.indexOfScalar(u8, c, '.')) |dot| c[dot + 1 ..] else c;
                     names[i] = self.allocator.dupe(u8, base) catch return EngineError.OutOfMemory;
@@ -3849,12 +4463,17 @@ pub const Database = struct {
                 break :blk names;
             } else blk: {
                 // Empty result set
-                const names = self.allocator.alloc([]const u8, 0) catch return EngineError.OutOfMemory;
+                const names = self.allocator.alloc(
+                    []const u8,
+                    0,
+                ) catch return EngineError.OutOfMemory;
                 break :blk names;
             };
 
             // Create MaterializedOp
-            const mat_op = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+            const mat_op = self.allocator.create(
+                MaterializedOp,
+            ) catch return EngineError.OutOfMemory;
             mat_op.* = MaterializedOp.init(
                 self.allocator,
                 col_names,
@@ -3900,8 +4519,18 @@ pub const Database = struct {
         }
         if (cte.cycle) |cy| {
             const empty_row = Row{ .columns = &.{}, .values = &.{}, .allocator = self.allocator };
-            cycle_to_val = evalExpr(self.allocator, cy.cycle_value, &empty_row, null) catch .{ .integer = 1 };
-            cycle_default_val = evalExpr(self.allocator, cy.no_cycle_value, &empty_row, null) catch .{ .integer = 0 };
+            cycle_to_val = evalExpr(
+                self.allocator,
+                cy.cycle_value,
+                &empty_row,
+                null,
+            ) catch .{ .integer = 1 };
+            cycle_default_val = evalExpr(
+                self.allocator,
+                cy.no_cycle_value,
+                &empty_row,
+                null,
+            ) catch .{ .integer = 0 };
         }
 
         // Cycle tracking: set of cycle keys seen so far (globally across all iterations)
@@ -3913,12 +4542,17 @@ pub const Database = struct {
         }
 
         // Step 1: Execute the anchor query
-        const anchor_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+        const anchor_ops = self.allocator.create(
+            OperatorChain,
+        ) catch return EngineError.OutOfMemory;
         anchor_ops.* = .{};
         anchor_ops.cte_materialized = cte_map.*;
         ops.cte_ops.append(self.allocator, anchor_ops) catch return EngineError.OutOfMemory;
 
-        var anchor_iter = self.buildIterator(anchor_plan, anchor_ops) catch return EngineError.ExecutionError;
+        var anchor_iter = self.buildIterator(
+            anchor_plan,
+            anchor_ops,
+        ) catch return EngineError.ExecutionError;
 
         // Collect anchor rows and determine column names (without cycle col)
         // all_rows: rows with cycle col appended (if CYCLE clause present)
@@ -3936,11 +4570,18 @@ pub const Database = struct {
                 col_names = try self.captureColNames(&row, cte.column_names);
                 // Find cycle column indices in base col_names
                 if (cte.cycle) |cy| {
-                    const indices = self.allocator.alloc(usize, cy.columns.len) catch return EngineError.OutOfMemory;
+                    const indices = self.allocator.alloc(
+                        usize,
+                        cy.columns.len,
+                    ) catch return EngineError.OutOfMemory;
                     for (cy.columns, 0..) |cycle_col, i| {
                         indices[i] = col_names.?.len; // sentinel: not found = out of bounds
                         for (col_names.?, 0..) |cn, j| {
-                            const base_cn = if (std.mem.indexOfScalar(u8, cn, '.')) |dot| cn[dot + 1 ..] else cn;
+                            const base_cn =
+                                if (std.mem.indexOfScalar(u8, cn, '.')) |dot|
+                                    cn[dot + 1 ..]
+                                else
+                                    cn;
                             if (std.ascii.eqlIgnoreCase(base_cn, cycle_col)) {
                                 indices[i] = j;
                                 break;
@@ -3980,7 +4621,10 @@ pub const Database = struct {
 
         // Build extended column names (with cycle column appended) for output
         const output_col_names: []const []const u8 = if (cte.cycle) |cy| blk: {
-            const extended = self.allocator.alloc([]const u8, col_names.?.len + 1) catch return EngineError.OutOfMemory;
+            const extended = self.allocator.alloc(
+                []const u8,
+                col_names.?.len + 1,
+            ) catch return EngineError.OutOfMemory;
             for (col_names.?, 0..) |n, i| extended[i] = n;
             extended[col_names.?.len] = cy.cycle_column;
             // col_names is now owned by extended; don't free it separately
@@ -3993,8 +4637,13 @@ pub const Database = struct {
         var working_rows = std.ArrayListUnmanaged([]Value){};
         for (all_rows.items) |row_vals| {
             const base_len = if (has_cycle) row_vals.len - 1 else row_vals.len;
-            const base_copy = self.allocator.alloc(Value, base_len) catch return EngineError.OutOfMemory;
-            for (0..base_len) |i| base_copy[i] = row_vals[i].dupe(self.allocator) catch return EngineError.OutOfMemory;
+            const base_copy = self.allocator.alloc(
+                Value,
+                base_len,
+            ) catch return EngineError.OutOfMemory;
+            for (0..base_len) |i| base_copy[i] = row_vals[i].dupe(
+                self.allocator,
+            ) catch return EngineError.OutOfMemory;
             working_rows.append(self.allocator, base_copy) catch return EngineError.OutOfMemory;
         }
 
@@ -4011,8 +4660,12 @@ pub const Database = struct {
             // Create a MaterializedOp for the working table (current iteration's input)
             // Working table uses base col names (without cycle col)
             const working_col_names = try self.dupeColNames(base_col_names);
-            const working_data = working_rows.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory;
-            const working_mat = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+            const working_data = working_rows.toOwnedSlice(
+                self.allocator,
+            ) catch return EngineError.OutOfMemory;
+            const working_mat = self.allocator.create(
+                MaterializedOp,
+            ) catch return EngineError.OutOfMemory;
             working_mat.* = MaterializedOp.init(self.allocator, working_col_names, working_data);
 
             // Put the working table into the CTE map so recursive scans find it
@@ -4023,12 +4676,17 @@ pub const Database = struct {
             cte_map.put(self.allocator, cte.name, working_mat) catch return EngineError.OutOfMemory;
 
             // Execute the recursive part against the working table
-            const rec_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+            const rec_ops = self.allocator.create(
+                OperatorChain,
+            ) catch return EngineError.OutOfMemory;
             rec_ops.* = .{};
             rec_ops.cte_materialized = cte_map.*;
             ops.cte_ops.append(self.allocator, rec_ops) catch return EngineError.OutOfMemory;
 
-            var rec_iter = self.buildIterator(recursive_plan, rec_ops) catch return EngineError.ExecutionError;
+            var rec_iter = self.buildIterator(
+                recursive_plan,
+                rec_ops,
+            ) catch return EngineError.ExecutionError;
 
             // Collect new rows from this iteration
             working_rows = .{};
@@ -4039,12 +4697,18 @@ pub const Database = struct {
 
                 if (has_cycle) {
                     // Compute cycle key from base values
-                    const key = try self.computeCycleKey(base_vals, cycle_col_indices_opt orelse &.{});
+                    const key = try self.computeCycleKey(
+                        base_vals,
+                        cycle_col_indices_opt orelse &.{},
+                    );
                     if (cycle_seen.contains(key)) {
                         // Cycle detected: emit with cycle_to_val, don't recurse further
                         self.allocator.free(key);
                         const full_vals = try self.appendCycleValue(base_vals, cycle_to_val);
-                        all_rows.append(self.allocator, full_vals) catch return EngineError.OutOfMemory;
+                        all_rows.append(
+                            self.allocator,
+                            full_vals,
+                        ) catch return EngineError.OutOfMemory;
                         // base_vals ownership transferred to full_vals (first n-1 elements)
                     } else {
                         // No cycle: emit with cycle_default_val and continue recursion
@@ -4054,19 +4718,34 @@ pub const Database = struct {
                             self.allocator.free(base_vals);
                             return EngineError.OutOfMemory;
                         };
-                        const base_len = base_vals.len; // save before appendCycleValue takes ownership
+                        // save before appendCycleValue takes ownership
+                        const base_len = base_vals.len;
                         const full_vals = try self.appendCycleValue(base_vals, cycle_default_val);
-                        all_rows.append(self.allocator, full_vals) catch return EngineError.OutOfMemory;
+                        all_rows.append(
+                            self.allocator,
+                            full_vals,
+                        ) catch return EngineError.OutOfMemory;
                         // Add base copy to working set for next iteration
-                        const working_copy = self.allocator.alloc(Value, base_len) catch return EngineError.OutOfMemory;
-                        for (0..base_len) |i| working_copy[i] = full_vals[i].dupe(self.allocator) catch return EngineError.OutOfMemory;
-                        working_rows.append(self.allocator, working_copy) catch return EngineError.OutOfMemory;
+                        const working_copy = self.allocator.alloc(
+                            Value,
+                            base_len,
+                        ) catch return EngineError.OutOfMemory;
+                        for (0..base_len) |i| working_copy[i] = full_vals[i].dupe(
+                            self.allocator,
+                        ) catch return EngineError.OutOfMemory;
+                        working_rows.append(
+                            self.allocator,
+                            working_copy,
+                        ) catch return EngineError.OutOfMemory;
                     }
                 } else {
                     // No CYCLE clause: add to both complete result and next working set
                     all_rows.append(self.allocator, base_vals) catch return EngineError.OutOfMemory;
                     const working_copy = try self.dupeRowValuesSlice(base_vals);
-                    working_rows.append(self.allocator, working_copy) catch return EngineError.OutOfMemory;
+                    working_rows.append(
+                        self.allocator,
+                        working_copy,
+                    ) catch return EngineError.OutOfMemory;
                 }
             }
             rec_iter.close();
@@ -4089,7 +4768,9 @@ pub const Database = struct {
         for (output_col_names[0..owned_count]) |c| self.allocator.free(@constCast(c));
         self.allocator.free(@constCast(output_col_names));
 
-        const final_mat = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+        const final_mat = self.allocator.create(
+            MaterializedOp,
+        ) catch return EngineError.OutOfMemory;
         final_mat.* = MaterializedOp.init(
             self.allocator,
             final_col_names,
@@ -4105,22 +4786,38 @@ pub const Database = struct {
     }
 
     /// Compute a cycle key from specific column values (used by CYCLE clause).
-    fn computeCycleKey(self: *Database, vals: []const Value, col_indices: []const usize) EngineError![]const u8 {
+    fn computeCycleKey(
+        self: *Database,
+        vals: []const Value,
+        col_indices: []const usize,
+    ) EngineError![]const u8 {
         var buf = std.ArrayList(u8){};
         const alloc = self.allocator;
         for (col_indices, 0..) |idx, i| {
-            if (i > 0) buf.append(alloc, 0) catch return EngineError.OutOfMemory; // null-byte separator
+            // null-byte separator
+            if (i > 0) buf.append(alloc, 0) catch return EngineError.OutOfMemory;
             if (idx >= vals.len) {
                 buf.appendSlice(alloc, "\xff") catch return EngineError.OutOfMemory;
                 continue;
             }
             switch (vals[idx]) {
                 .null_value => buf.appendSlice(alloc, "\xfe") catch return EngineError.OutOfMemory,
-                .integer => |n| std.fmt.format(buf.writer(alloc), "{d}", .{n}) catch return EngineError.OutOfMemory,
-                .real => |r| std.fmt.format(buf.writer(alloc), "{d}", .{r}) catch return EngineError.OutOfMemory,
+                .integer => |n| std.fmt.format(
+                    buf.writer(alloc),
+                    "{d}",
+                    .{n},
+                ) catch return EngineError.OutOfMemory,
+                .real => |r| std.fmt.format(
+                    buf.writer(alloc),
+                    "{d}",
+                    .{r},
+                ) catch return EngineError.OutOfMemory,
                 .text => |t| buf.appendSlice(alloc, t) catch return EngineError.OutOfMemory,
                 .blob => |b| buf.appendSlice(alloc, b) catch return EngineError.OutOfMemory,
-                .boolean => |b| buf.append(alloc, if (b) 1 else 0) catch return EngineError.OutOfMemory,
+                .boolean => |b| buf.append(
+                    alloc,
+                    if (b) 1 else 0,
+                ) catch return EngineError.OutOfMemory,
                 else => buf.appendSlice(alloc, "?") catch return EngineError.OutOfMemory,
             }
         }
@@ -4130,23 +4827,38 @@ pub const Database = struct {
     /// Append a cycle marker value to a base row's values array.
     /// Takes ownership of base_vals and returns a new slice with cycle_val appended.
     fn appendCycleValue(self: *Database, base_vals: []Value, cycle_val: Value) EngineError![]Value {
-        const extended = self.allocator.alloc(Value, base_vals.len + 1) catch return EngineError.OutOfMemory;
+        const extended = self.allocator.alloc(
+            Value,
+            base_vals.len + 1,
+        ) catch return EngineError.OutOfMemory;
         @memcpy(extended[0..base_vals.len], base_vals);
         self.allocator.free(base_vals);
-        extended[extended.len - 1] = cycle_val.dupe(self.allocator) catch return EngineError.OutOfMemory;
+        extended[extended.len - 1] = cycle_val.dupe(
+            self.allocator,
+        ) catch return EngineError.OutOfMemory;
         return extended;
     }
 
     /// Capture column names from a row, applying CTE column aliases if provided.
-    fn captureColNames(self: *Database, row: *const Row, cte_col_names: []const []const u8) EngineError![]const []const u8 {
+    fn captureColNames(
+        self: *Database,
+        row: *const Row,
+        cte_col_names: []const []const u8,
+    ) EngineError![]const []const u8 {
         if (cte_col_names.len > 0) {
-            const names = self.allocator.alloc([]const u8, cte_col_names.len) catch return EngineError.OutOfMemory;
+            const names = self.allocator.alloc(
+                []const u8,
+                cte_col_names.len,
+            ) catch return EngineError.OutOfMemory;
             for (cte_col_names, 0..) |name, i| {
                 names[i] = self.allocator.dupe(u8, name) catch return EngineError.OutOfMemory;
             }
             return names;
         }
-        const names = self.allocator.alloc([]const u8, row.columns.len) catch return EngineError.OutOfMemory;
+        const names = self.allocator.alloc(
+            []const u8,
+            row.columns.len,
+        ) catch return EngineError.OutOfMemory;
         for (row.columns, 0..) |c, i| {
             const base = if (std.mem.indexOfScalar(u8, c, '.')) |dot| c[dot + 1 ..] else c;
             names[i] = self.allocator.dupe(u8, base) catch return EngineError.OutOfMemory;
@@ -4155,9 +4867,15 @@ pub const Database = struct {
     }
 
     /// Build empty column names from explicit CTE column aliases.
-    fn buildEmptyColNames(self: *Database, cte_col_names: []const []const u8) EngineError![]const []const u8 {
+    fn buildEmptyColNames(
+        self: *Database,
+        cte_col_names: []const []const u8,
+    ) EngineError![]const []const u8 {
         if (cte_col_names.len > 0) {
-            const names = self.allocator.alloc([]const u8, cte_col_names.len) catch return EngineError.OutOfMemory;
+            const names = self.allocator.alloc(
+                []const u8,
+                cte_col_names.len,
+            ) catch return EngineError.OutOfMemory;
             for (cte_col_names, 0..) |name, i| {
                 names[i] = self.allocator.dupe(u8, name) catch return EngineError.OutOfMemory;
             }
@@ -4182,7 +4900,10 @@ pub const Database = struct {
 
     /// Duplicate column names.
     fn dupeColNames(self: *Database, names: []const []const u8) EngineError![]const []const u8 {
-        const result = self.allocator.alloc([]const u8, names.len) catch return EngineError.OutOfMemory;
+        const result = self.allocator.alloc(
+            []const u8,
+            names.len,
+        ) catch return EngineError.OutOfMemory;
         for (names, 0..) |n, i| {
             result[i] = self.allocator.dupe(u8, n) catch return EngineError.OutOfMemory;
         }
@@ -4190,17 +4911,29 @@ pub const Database = struct {
     }
 
     /// Build a scan over a materialized CTE result.
-    fn buildCteScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, source_mat: *MaterializedOp) EngineError!RowIterator {
+    fn buildCteScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        ops: *OperatorChain,
+        source_mat: *MaterializedOp,
+    ) EngineError!RowIterator {
         // Create a new MaterializedOp that reads from the same data
         // We duplicate all the data since each MaterializedOp owns its data
         const num_cols = source_mat.col_names.len;
         const num_rows = source_mat.rows.len;
 
         // Duplicate column names (apply scan alias if present)
-        const col_names = self.allocator.alloc([]const u8, num_cols) catch return EngineError.OutOfMemory;
+        const col_names = self.allocator.alloc(
+            []const u8,
+            num_cols,
+        ) catch return EngineError.OutOfMemory;
         for (source_mat.col_names, 0..) |c, i| {
             if (scan.alias) |alias| {
-                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, c }) catch return EngineError.OutOfMemory;
+                col_names[i] = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}.{s}",
+                    .{ alias, c },
+                ) catch return EngineError.OutOfMemory;
             } else {
                 col_names[i] = self.allocator.dupe(u8, c) catch return EngineError.OutOfMemory;
             }
@@ -4209,7 +4942,10 @@ pub const Database = struct {
         // Duplicate all rows
         const rows = self.allocator.alloc([]Value, num_rows) catch return EngineError.OutOfMemory;
         for (source_mat.rows, 0..) |src_vals, r| {
-            const vals = self.allocator.alloc(Value, src_vals.len) catch return EngineError.OutOfMemory;
+            const vals = self.allocator.alloc(
+                Value,
+                src_vals.len,
+            ) catch return EngineError.OutOfMemory;
             for (src_vals, 0..) |v, c| {
                 vals[c] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
             }
@@ -4259,14 +4995,22 @@ pub const Database = struct {
         return .null_value;
     }
 
-    fn buildTableScan(self: *Database, scan: PlanNode.Scan, ops: *OperatorChain, table_info: *catalog_mod.TableInfo) EngineError!RowIterator {
+    fn buildTableScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        ops: *OperatorChain,
+        table_info: *catalog_mod.TableInfo,
+    ) EngineError!RowIterator {
         defer table_info.deinit(self.allocator);
 
         // Register SSI read for SERIALIZABLE transactions
         try self.ssiRegisterRead(table_info.data_root_page_id);
 
         // Build default values for columns (needed when old rows have fewer columns than schema)
-        const col_defaults = self.allocator.alloc(executor_mod.Value, table_info.columns.len) catch return EngineError.OutOfMemory;
+        const col_defaults = self.allocator.alloc(
+            executor_mod.Value,
+            table_info.columns.len,
+        ) catch return EngineError.OutOfMemory;
         for (col_defaults) |*d| d.* = .null_value;
         for (table_info.columns, 0..) |col, i| {
             if (self.catalog.getDefaultExpr(scan.table, col.name) catch null) |expr_sql| {
@@ -4294,32 +5038,62 @@ pub const Database = struct {
             const idx = covering_idx.?;
 
             // Build covering_columns: index key first, then INCLUDE columns
-            // Use same alias formatting as requested_col_names for correct matching in buildCoveringRow
-            const cov_cols = self.allocator.alloc([]const u8, 1 + idx.included_columns.len) catch return EngineError.OutOfMemory;
+            // Use same alias formatting as requested_col_names for correct matching in
+            // buildCoveringRow
+            const cov_cols = self.allocator.alloc(
+                []const u8,
+                1 + idx.included_columns.len,
+            ) catch return EngineError.OutOfMemory;
             if (scan.alias) |alias| {
-                cov_cols[0] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, idx.column_name }) catch return EngineError.OutOfMemory;
+                cov_cols[0] = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}.{s}",
+                    .{ alias, idx.column_name },
+                ) catch return EngineError.OutOfMemory;
             } else {
-                cov_cols[0] = self.allocator.dupe(u8, idx.column_name) catch return EngineError.OutOfMemory;
+                cov_cols[0] = self.allocator.dupe(
+                    u8,
+                    idx.column_name,
+                ) catch return EngineError.OutOfMemory;
             }
             for (idx.included_columns, 0..) |incl_col, i| {
                 if (scan.alias) |alias| {
-                    cov_cols[1 + i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, incl_col }) catch return EngineError.OutOfMemory;
+                    cov_cols[1 + i] = std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}.{s}",
+                        .{ alias, incl_col },
+                    ) catch return EngineError.OutOfMemory;
                 } else {
-                    cov_cols[1 + i] = self.allocator.dupe(u8, incl_col) catch return EngineError.OutOfMemory;
+                    cov_cols[1 + i] = self.allocator.dupe(
+                        u8,
+                        incl_col,
+                    ) catch return EngineError.OutOfMemory;
                 }
             }
 
             // Build col_names with requested columns only (subset of covering_columns)
-            const requested_col_names = self.allocator.alloc([]const u8, scan.columns.len) catch return EngineError.OutOfMemory;
+            const requested_col_names = self.allocator.alloc(
+                []const u8,
+                scan.columns.len,
+            ) catch return EngineError.OutOfMemory;
             for (scan.columns, 0..) |col_ref, i| {
                 if (scan.alias) |alias| {
-                    requested_col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col_ref.column }) catch return EngineError.OutOfMemory;
+                    requested_col_names[i] = std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}.{s}",
+                        .{ alias, col_ref.column },
+                    ) catch return EngineError.OutOfMemory;
                 } else {
-                    requested_col_names[i] = self.allocator.dupe(u8, col_ref.column) catch return EngineError.OutOfMemory;
+                    requested_col_names[i] = self.allocator.dupe(
+                        u8,
+                        col_ref.column,
+                    ) catch return EngineError.OutOfMemory;
                 }
             }
 
-            const index_scan_op = self.allocator.create(IndexOnlyScanOp) catch return EngineError.OutOfMemory;
+            const index_scan_op = self.allocator.create(
+                IndexOnlyScanOp,
+            ) catch return EngineError.OutOfMemory;
             index_scan_op.* = IndexOnlyScanOp.init(
                 self.allocator,
                 self.pool,
@@ -4338,12 +5112,22 @@ pub const Database = struct {
         }
 
         // Build column names for the scan
-        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+        const col_names = self.allocator.alloc(
+            []const u8,
+            table_info.columns.len,
+        ) catch return EngineError.OutOfMemory;
         for (table_info.columns, 0..) |col, i| {
             if (scan.alias) |alias| {
-                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return EngineError.OutOfMemory;
+                col_names[i] = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}.{s}",
+                    .{ alias, col.name },
+                ) catch return EngineError.OutOfMemory;
             } else {
-                col_names[i] = self.allocator.dupe(u8, col.name) catch return EngineError.OutOfMemory;
+                col_names[i] = self.allocator.dupe(
+                    u8,
+                    col.name,
+                ) catch return EngineError.OutOfMemory;
             }
         }
 
@@ -4395,7 +5179,11 @@ pub const Database = struct {
         return scan_op.iterator();
     }
 
-    fn buildFilter(self: *Database, filter: PlanNode.Filter, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildFilter(
+        self: *Database,
+        filter: PlanNode.Filter,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         // Try index selection: if the predicate is `col = literal` and the
         // input is a table scan on a table with an index on that column,
         // use IndexScanOp for a direct B+Tree lookup instead of full scan.
@@ -4406,7 +5194,9 @@ pub const Database = struct {
             // GIN `consistent` can be lossy, so the scan is always wrapped in a
             // FilterOp recheck of the original predicate — never optimize this away.
             if (self.tryBuildGinIndexScan(filter.input.scan, filter.predicate, ops)) |iter| {
-                const gin_filter_op = self.allocator.create(FilterOp) catch return EngineError.OutOfMemory;
+                const gin_filter_op = self.allocator.create(
+                    FilterOp,
+                ) catch return EngineError.OutOfMemory;
                 gin_filter_op.* = FilterOp.init(self.allocator, iter, filter.predicate);
                 gin_filter_op.catalog = &self.catalog;
                 gin_filter_op.outer_row = ops.outer_row;
@@ -4417,7 +5207,9 @@ pub const Database = struct {
             // Always wrapped in a FilterOp recheck since bitmap operations may drop
             // non-indexed leaves, requiring mandatory re-validation.
             if (self.tryBuildBitmapScan(filter.input.scan, filter.predicate, ops)) |iter| {
-                const bitmap_filter_op = self.allocator.create(FilterOp) catch return EngineError.OutOfMemory;
+                const bitmap_filter_op = self.allocator.create(
+                    FilterOp,
+                ) catch return EngineError.OutOfMemory;
                 bitmap_filter_op.* = FilterOp.init(self.allocator, iter, filter.predicate);
                 bitmap_filter_op.catalog = &self.catalog;
                 bitmap_filter_op.outer_row = ops.outer_row;
@@ -4437,7 +5229,12 @@ pub const Database = struct {
 
     /// Try to use a secondary index for a predicate on a scan.
     /// Returns a RowIterator if successful, null if index scan is not applicable.
-    fn tryBuildIndexScan(self: *Database, scan: PlanNode.Scan, predicate: *const ast_mod.Expr, ops: *OperatorChain) ?RowIterator {
+    fn tryBuildIndexScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        predicate: *const ast_mod.Expr,
+        ops: *OperatorChain,
+    ) ?RowIterator {
         // Only handle simple equality predicates: column_ref = literal
         const eq = extractEqualityPredicate(predicate) orelse return null;
 
@@ -4460,17 +5257,27 @@ pub const Database = struct {
         };
 
         // Build column names for the scan
-        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return null;
+        const col_names = self.allocator.alloc(
+            []const u8,
+            table_info.columns.len,
+        ) catch return null;
         for (table_info.columns, 0..) |col, i| {
             if (scan.alias) |alias| {
-                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return null;
+                col_names[i] = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}.{s}",
+                    .{ alias, col.name },
+                ) catch return null;
             } else {
                 col_names[i] = self.allocator.dupe(u8, col.name) catch return null;
             }
         }
 
         // Build default values for columns (needed when old rows have fewer columns than schema)
-        const col_defaults = self.allocator.alloc(executor_mod.Value, table_info.columns.len) catch return null;
+        const col_defaults = self.allocator.alloc(
+            executor_mod.Value,
+            table_info.columns.len,
+        ) catch return null;
         for (col_defaults) |*d| d.* = .null_value;
         for (table_info.columns, 0..) |col, i| {
             if (self.catalog.getDefaultExpr(scan.table, col.name) catch null) |expr_sql| {
@@ -4507,18 +5314,31 @@ pub const Database = struct {
 
         // Additionally, if every requested column is covered by the index, we can
         // skip the heap fetch entirely and build the row straight from the entry.
-        if (idx_info.covering_storage and columnsAreCoveredByIndex(scan.columns, idx_info.column_name, idx_info.included_columns)) {
+        if (idx_info.covering_storage and
+            columnsAreCoveredByIndex(scan.columns, idx_info.column_name, idx_info.included_columns))
+        {
             // Build covering_columns: index key column first, then INCLUDE columns
             // Use same alias formatting as col_names for correct matching in buildCoveringRow
-            const cov_cols = self.allocator.alloc([]const u8, 1 + idx_info.included_columns.len) catch return null;
+            const cov_cols = self.allocator.alloc(
+                []const u8,
+                1 + idx_info.included_columns.len,
+            ) catch return null;
             if (scan.alias) |alias| {
-                cov_cols[0] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, idx_info.column_name }) catch return null;
+                cov_cols[0] = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}.{s}",
+                    .{ alias, idx_info.column_name },
+                ) catch return null;
             } else {
                 cov_cols[0] = self.allocator.dupe(u8, idx_info.column_name) catch return null;
             }
             for (idx_info.included_columns, 0..) |incl_col, i| {
                 if (scan.alias) |alias| {
-                    cov_cols[1 + i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, incl_col }) catch return null;
+                    cov_cols[1 + i] = std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}.{s}",
+                        .{ alias, incl_col },
+                    ) catch return null;
                 } else {
                     cov_cols[1 + i] = self.allocator.dupe(u8, incl_col) catch return null;
                 }
@@ -4544,7 +5364,12 @@ pub const Database = struct {
     /// array_ops `@>`, and tsvector_ops `@@`. evalJsonContains supports Value.array
     /// directly (set-containment, not JSON-text round-tripping), so array_ops recheck
     /// is safe.
-    fn tryBuildGinIndexScan(self: *Database, scan: PlanNode.Scan, predicate: *const ast_mod.Expr, ops: *OperatorChain) ?RowIterator {
+    fn tryBuildGinIndexScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        predicate: *const ast_mod.Expr,
+        ops: *OperatorChain,
+    ) ?RowIterator {
         const pred = extractGinPredicate(predicate) orelse return null;
 
         var table_info = self.catalog.getTable(scan.table) catch return null;
@@ -4569,20 +5394,33 @@ pub const Database = struct {
         const rhs_val = evalExpr(self.allocator, pred.rhs, &empty_row, null) catch return null;
         defer rhs_val.free(self.allocator);
         if (rhs_val == .null_value) return null;
-        const query_value = executor_mod.serializeValueBytes(self.allocator, rhs_val) catch return null;
+        const query_value = executor_mod.serializeValueBytes(
+            self.allocator,
+            rhs_val,
+        ) catch return null;
 
         // Build column names for the scan
-        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return null;
+        const col_names = self.allocator.alloc(
+            []const u8,
+            table_info.columns.len,
+        ) catch return null;
         for (table_info.columns, 0..) |col, i| {
             if (scan.alias) |alias| {
-                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return null;
+                col_names[i] = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}.{s}",
+                    .{ alias, col.name },
+                ) catch return null;
             } else {
                 col_names[i] = self.allocator.dupe(u8, col.name) catch return null;
             }
         }
 
         // Build default values for columns (needed when old rows have fewer columns than schema)
-        const col_defaults = self.allocator.alloc(executor_mod.Value, table_info.columns.len) catch return null;
+        const col_defaults = self.allocator.alloc(
+            executor_mod.Value,
+            table_info.columns.len,
+        ) catch return null;
         for (col_defaults) |*d| d.* = .null_value;
         for (table_info.columns, 0..) |col, i| {
             if (self.catalog.getDefaultExpr(scan.table, col.name) catch null) |expr_sql| {
@@ -4623,14 +5461,24 @@ pub const Database = struct {
     /// Explicitly out of scope (mirrors GIN's / index-only-scan's own "out of scope" sections
     /// in architecture.md): joins (single-table scans only — `collectAndLeaves`/`collectOrLeaves`
     /// only look at columns of `scan.table`); mixed AND-of-OR / OR-of-AND predicate trees (only a
-    /// flat top-level AND or flat top-level OR is recognized, checked via the `expr.* != .binary_op`
+    /// flat top-level AND or flat top-level OR is recognized, checked via the `expr.* !=
+    /// .binary_op`
     /// / `op.op == .@"and"`/`.@"or"` guards in `collectAndLeaves`/`collectOrLeaves`); non-`.btree`
-    /// index types (`.hash`/`.gist`/`.gin` leaves are skipped, same restriction as covering-storage);
-    /// and covering-storage interaction (`buildBitmapAndScan`/`buildBitmapOrScan` always route through
-    /// `BitmapHeapScanOp`, which does a full row fetch — it never reads a covering index payload).
-    /// None of these fail loudly: they just make `tryBuildBitmapScan` return `null`, falling through
+    /// index types (`.hash`/`.gist`/`.gin` leaves are skipped, same restriction as
+    /// covering-storage);
+    /// and covering-storage interaction (`buildBitmapAndScan`/`buildBitmapOrScan` always route
+    /// through
+    /// `BitmapHeapScanOp`, which does a full row fetch — it never reads a covering index
+    /// payload).
+    /// None of these fail loudly: they just make `tryBuildBitmapScan` return `null`, falling
+    /// through
     /// to the pre-existing full-scan + `FilterOp` behavior, so there's no regression risk.
-    fn tryBuildBitmapScan(self: *Database, scan: PlanNode.Scan, predicate: *const ast_mod.Expr, ops: *OperatorChain) ?RowIterator {
+    fn tryBuildBitmapScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        predicate: *const ast_mod.Expr,
+        ops: *OperatorChain,
+    ) ?RowIterator {
         // Look up the table to find schema and index info
         var table_info = self.catalog.getTable(scan.table) catch return null;
         defer table_info.deinit(self.allocator);
@@ -4663,7 +5511,13 @@ pub const Database = struct {
     }
 
     /// Build and wire a bitmap-OR scan from a set of indexed equalities.
-    fn buildBitmapOrScan(self: *Database, scan: PlanNode.Scan, table_info: TableInfo, leaves: []BitmapEqualityPredicate, ops: *OperatorChain) ?RowIterator {
+    fn buildBitmapOrScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        table_info: TableInfo,
+        leaves: []BitmapEqualityPredicate,
+        ops: *OperatorChain,
+    ) ?RowIterator {
         // Create one BitmapIndexScanOp per leaf equality
         for (leaves) |leaf| {
             const idx_key = switch (leaf.value_type) {
@@ -4686,8 +5540,12 @@ pub const Database = struct {
         // `ops.bitmap_index_scans` is shared across the whole OperatorChain (e.g. both
         // sides of a JOIN may each build their own bitmap scan), so only the tail slice
         // just appended in the loop above belongs to this call.
-        const bitmap_plans = self.allocator.alloc(executor_mod.BitmapPlan, leaves.len) catch return null;
-        const new_scans = ops.bitmap_index_scans.items[ops.bitmap_index_scans.items.len - leaves.len ..];
+        const bitmap_plans = self.allocator.alloc(
+            executor_mod.BitmapPlan,
+            leaves.len,
+        ) catch return null;
+        const new_scans =
+            ops.bitmap_index_scans.items[ops.bitmap_index_scans.items.len - leaves.len ..];
         for (new_scans, 0..) |bis, i| {
             bitmap_plans[i] = bis.asBitmapPlan();
         }
@@ -4699,10 +5557,17 @@ pub const Database = struct {
         ops.bitmap_or_ops.append(self.allocator, or_op) catch return null;
 
         // Build column names for the scan
-        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return null;
+        const col_names = self.allocator.alloc(
+            []const u8,
+            table_info.columns.len,
+        ) catch return null;
         for (table_info.columns, 0..) |col, i| {
             if (scan.alias) |alias| {
-                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return null;
+                col_names[i] = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}.{s}",
+                    .{ alias, col.name },
+                ) catch return null;
             } else {
                 col_names[i] = self.allocator.dupe(u8, col.name) catch return null;
             }
@@ -4724,7 +5589,13 @@ pub const Database = struct {
     }
 
     /// Build and wire a bitmap-AND scan from a set of indexed equalities.
-    fn buildBitmapAndScan(self: *Database, scan: PlanNode.Scan, table_info: TableInfo, leaves: []BitmapEqualityPredicate, ops: *OperatorChain) ?RowIterator {
+    fn buildBitmapAndScan(
+        self: *Database,
+        scan: PlanNode.Scan,
+        table_info: TableInfo,
+        leaves: []BitmapEqualityPredicate,
+        ops: *OperatorChain,
+    ) ?RowIterator {
         // Create one BitmapIndexScanOp per leaf equality
         for (leaves) |leaf| {
             const idx_key = switch (leaf.value_type) {
@@ -4747,8 +5618,12 @@ pub const Database = struct {
         // `ops.bitmap_index_scans` is shared across the whole OperatorChain (e.g. both
         // sides of a JOIN may each build their own bitmap scan), so only the tail slice
         // just appended in the loop above belongs to this call.
-        const bitmap_plans = self.allocator.alloc(executor_mod.BitmapPlan, leaves.len) catch return null;
-        const new_scans = ops.bitmap_index_scans.items[ops.bitmap_index_scans.items.len - leaves.len ..];
+        const bitmap_plans = self.allocator.alloc(
+            executor_mod.BitmapPlan,
+            leaves.len,
+        ) catch return null;
+        const new_scans =
+            ops.bitmap_index_scans.items[ops.bitmap_index_scans.items.len - leaves.len ..];
         for (new_scans, 0..) |bis, i| {
             bitmap_plans[i] = bis.asBitmapPlan();
         }
@@ -4760,10 +5635,17 @@ pub const Database = struct {
         ops.bitmap_and_ops.append(self.allocator, and_op) catch return null;
 
         // Build column names for the scan
-        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return null;
+        const col_names = self.allocator.alloc(
+            []const u8,
+            table_info.columns.len,
+        ) catch return null;
         for (table_info.columns, 0..) |col, i| {
             if (scan.alias) |alias| {
-                col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ alias, col.name }) catch return null;
+                col_names[i] = std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}.{s}",
+                    .{ alias, col.name },
+                ) catch return null;
             } else {
                 col_names[i] = self.allocator.dupe(u8, col.name) catch return null;
             }
@@ -4784,7 +5666,11 @@ pub const Database = struct {
         return heap_op.iterator();
     }
 
-    fn buildProject(self: *Database, project: PlanNode.Project, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildProject(
+        self: *Database,
+        project: PlanNode.Project,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const input = try self.buildIterator(project.input, ops);
 
         // Check if this is a SELECT * (single column_ref with name "*")
@@ -4804,7 +5690,11 @@ pub const Database = struct {
         return project_op.iterator();
     }
 
-    fn buildLimit(self: *Database, limit: PlanNode.Limit, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildLimit(
+        self: *Database,
+        limit: PlanNode.Limit,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const input = try self.buildIterator(limit.input, ops);
 
         // Evaluate limit/offset expressions (they should be integer literals)
@@ -4828,7 +5718,11 @@ pub const Database = struct {
         return limit_op.iterator();
     }
 
-    fn buildSort(self: *Database, sort: PlanNode.Sort, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildSort(
+        self: *Database,
+        sort: PlanNode.Sort,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const input = try self.buildIterator(sort.input, ops);
         const sort_op = self.allocator.create(SortOp) catch return EngineError.OutOfMemory;
         sort_op.* = SortOp.init(self.allocator, input, sort.order_by);
@@ -4837,7 +5731,11 @@ pub const Database = struct {
         return sort_op.iterator();
     }
 
-    fn buildAggregate(self: *Database, agg: PlanNode.Aggregate, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildAggregate(
+        self: *Database,
+        agg: PlanNode.Aggregate,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const input = try self.buildIterator(agg.input, ops);
         const agg_op = self.allocator.create(AggregateOp) catch return EngineError.OutOfMemory;
         agg_op.* = AggregateOp.init(self.allocator, input, agg.group_by, agg.aggregates);
@@ -4846,15 +5744,28 @@ pub const Database = struct {
         return agg_op.iterator();
     }
 
-    fn buildJoin(self: *Database, join: PlanNode.Join, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildJoin(
+        self: *Database,
+        join: PlanNode.Join,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         // Check if right side is a LATERAL table function scan
         if (join.right.* == .table_function_scan) {
             const tfs = join.right.table_function_scan;
             if (tfs.is_lateral) {
                 // Use LateralJoinOp instead of regular join
                 const left = try self.buildIterator(join.left, ops);
-                const lateral_op = self.allocator.create(LateralJoinOp) catch return EngineError.OutOfMemory;
-                lateral_op.* = LateralJoinOp.init(self.allocator, self, left, tfs, join.join_type, join.on_condition);
+                const lateral_op = self.allocator.create(
+                    LateralJoinOp,
+                ) catch return EngineError.OutOfMemory;
+                lateral_op.* = LateralJoinOp.init(
+                    self.allocator,
+                    self,
+                    left,
+                    tfs,
+                    join.join_type,
+                    join.on_condition,
+                );
                 ops.lateral_join = lateral_op;
                 return lateral_op.iterator();
             }
@@ -4866,27 +5777,55 @@ pub const Database = struct {
         // Use the algorithm selected by the optimizer
         return switch (join.algorithm) {
             .nested_loop => {
-                const join_op = self.allocator.create(NestedLoopJoinOp) catch return EngineError.OutOfMemory;
-                join_op.* = NestedLoopJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
+                const join_op = self.allocator.create(
+                    NestedLoopJoinOp,
+                ) catch return EngineError.OutOfMemory;
+                join_op.* = NestedLoopJoinOp.init(
+                    self.allocator,
+                    left,
+                    right,
+                    join.join_type,
+                    join.on_condition,
+                );
                 ops.join = join_op;
                 return join_op.iterator();
             },
             .hash => {
-                const join_op = self.allocator.create(HashJoinOp) catch return EngineError.OutOfMemory;
-                join_op.* = HashJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
+                const join_op = self.allocator.create(
+                    HashJoinOp,
+                ) catch return EngineError.OutOfMemory;
+                join_op.* = HashJoinOp.init(
+                    self.allocator,
+                    left,
+                    right,
+                    join.join_type,
+                    join.on_condition,
+                );
                 ops.hash_join = join_op;
                 return join_op.iterator();
             },
             .merge => {
-                const join_op = self.allocator.create(MergeJoinOp) catch return EngineError.OutOfMemory;
-                join_op.* = MergeJoinOp.init(self.allocator, left, right, join.join_type, join.on_condition);
+                const join_op = self.allocator.create(
+                    MergeJoinOp,
+                ) catch return EngineError.OutOfMemory;
+                join_op.* = MergeJoinOp.init(
+                    self.allocator,
+                    left,
+                    right,
+                    join.join_type,
+                    join.on_condition,
+                );
                 ops.merge_join = join_op;
                 return join_op.iterator();
             },
         };
     }
 
-    fn buildDistinct(self: *Database, d: PlanNode.Distinct, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildDistinct(
+        self: *Database,
+        d: PlanNode.Distinct,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const input = try self.buildIterator(d.input, ops);
         const distinct_op = self.allocator.create(DistinctOp) catch return EngineError.OutOfMemory;
         distinct_op.* = DistinctOp.init(self.allocator, input, d.on_exprs);
@@ -4894,7 +5833,11 @@ pub const Database = struct {
         return distinct_op.iterator();
     }
 
-    fn buildWindow(self: *Database, w: PlanNode.Window, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildWindow(
+        self: *Database,
+        w: PlanNode.Window,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const input = try self.buildIterator(w.input, ops);
         const window_op = self.allocator.create(WindowOp) catch return EngineError.OutOfMemory;
         window_op.* = WindowOp.init(self.allocator, input, w.funcs, w.aliases);
@@ -4902,7 +5845,11 @@ pub const Database = struct {
         return window_op.iterator();
     }
 
-    fn buildSetOp(self: *Database, set_op: PlanNode.SetOp, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildSetOp(
+        self: *Database,
+        set_op: PlanNode.SetOp,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         // Each side of a set operation needs its own OperatorChain because
         // both sides produce independent operator trees (scan, project, etc.)
         // that would otherwise overwrite each other in a single chain.
@@ -4924,7 +5871,11 @@ pub const Database = struct {
         return set_op_op.iterator();
     }
 
-    fn buildValues(self: *Database, values: PlanNode.Values, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildValues(
+        self: *Database,
+        values: PlanNode.Values,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const col_names: []const []const u8 = if (values.columns) |cols| cols else &.{};
         const values_op = self.allocator.create(ValuesOp) catch return EngineError.OutOfMemory;
         values_op.* = ValuesOp.init(self.allocator, col_names, values.rows);
@@ -4932,7 +5883,11 @@ pub const Database = struct {
         return values_op.iterator();
     }
 
-    fn buildEmpty(self: *Database, empty: PlanNode.Empty, ops: *OperatorChain) EngineError!RowIterator {
+    fn buildEmpty(
+        self: *Database,
+        empty: PlanNode.Empty,
+        ops: *OperatorChain,
+    ) EngineError!RowIterator {
         const empty_op = self.allocator.create(EmptyOp) catch return EngineError.OutOfMemory;
         empty_op.* = .{
             .allocator = self.allocator,
@@ -4942,7 +5897,7 @@ pub const Database = struct {
         return empty_op.iterator();
     }
 
-    // ── INSERT execution ──────────────────────────────────────────────
+    // ── INSERT execution ───────────────────────
 
     fn executeInsert(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
         defer {
@@ -4953,7 +5908,7 @@ pub const Database = struct {
         // Check if write operations are allowed (standby mode check)
         self.standby_coordinator.checkWriteAllowed() catch |err| {
             return switch (err) {
-                StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                error.WriteOperationNotAllowed => EngineError.TransactionError,
                 else => EngineError.ExecutionError,
             };
         };
@@ -5006,7 +5961,10 @@ pub const Database = struct {
         var check_col_names: ?[]const []const u8 = null;
         defer if (check_col_names) |ccn| self.allocator.free(ccn);
         if (view_check_where != null) {
-            const names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+            const names = self.allocator.alloc(
+                []const u8,
+                table_info.columns.len,
+            ) catch return EngineError.OutOfMemory;
             for (table_info.columns, 0..) |col, i| {
                 names[i] = col.name;
             }
@@ -5019,7 +5977,10 @@ pub const Database = struct {
         var rows_inserted: u64 = 0;
 
         // Build column names for trigger context
-        const insert_col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+        const insert_col_names = self.allocator.alloc(
+            []const u8,
+            table_info.columns.len,
+        ) catch return EngineError.OutOfMemory;
         defer self.allocator.free(insert_col_names);
         for (table_info.columns, 0..) |col, i| {
             insert_col_names[i] = col.name;
@@ -5036,11 +5997,22 @@ pub const Database = struct {
         }
 
         // Fire BEFORE INSERT triggers (STATEMENT fires once, ROW fires per row to be inserted)
-        self.fireTriggers(actual_table, .insert, .before, @intCast(values_node.rows.len), null, false, null);
+        self.fireTriggers(
+            actual_table,
+            .insert,
+            .before,
+            @intCast(values_node.rows.len),
+            null,
+            false,
+            null,
+        );
 
         for (values_node.rows) |row_exprs| {
             // Evaluate value expressions
-            const user_vals = self.allocator.alloc(Value, row_exprs.len) catch return EngineError.OutOfMemory;
+            const user_vals = self.allocator.alloc(
+                Value,
+                row_exprs.len,
+            ) catch return EngineError.OutOfMemory;
             var user_inited: usize = 0;
             defer {
                 for (user_vals[0..user_inited]) |v| v.free(self.allocator);
@@ -5048,7 +6020,12 @@ pub const Database = struct {
             }
 
             for (row_exprs, 0..) |expr, i| {
-                user_vals[i] = evalExpr(self.allocator, expr, &empty_row, null) catch return EngineError.ExecutionError;
+                user_vals[i] = evalExpr(
+                    self.allocator,
+                    expr,
+                    &empty_row,
+                    null,
+                ) catch return EngineError.ExecutionError;
                 user_inited += 1;
             }
 
@@ -5102,12 +6079,17 @@ pub const Database = struct {
                 break :blk false;
             };
 
-            // Check if we need to build a full row (has generated, autoincrement, defaults, or NOT NULL)
-            const need_full_row = has_generated or has_autoincrement or has_defaults or has_not_null;
+            // Check if we need to build a full row (has generated, autoincrement, defaults, or NOT
+            // NULL)
+            const need_full_row =
+                has_generated or has_autoincrement or has_defaults or has_not_null;
 
             if (need_full_row) {
                 // Build full row for all table columns
-                vals = self.allocator.alloc(Value, table_info.columns.len) catch return EngineError.OutOfMemory;
+                vals = self.allocator.alloc(
+                    Value,
+                    table_info.columns.len,
+                ) catch return EngineError.OutOfMemory;
                 full_row_allocated = true;
                 for (vals) |*v| v.* = .null_value;
 
@@ -5119,7 +6101,9 @@ pub const Database = struct {
                         for (table_info.columns, 0..) |tc, ti| {
                             if (std.ascii.eqlIgnoreCase(sc, tc.name)) {
                                 vals[ti].free(self.allocator);
-                                vals[ti] = user_vals[si].dupe(self.allocator) catch return EngineError.OutOfMemory;
+                                vals[ti] = user_vals[si].dupe(
+                                    self.allocator,
+                                ) catch return EngineError.OutOfMemory;
                                 break;
                             }
                         }
@@ -5135,7 +6119,8 @@ pub const Database = struct {
                         break :blk n;
                     };
                     const all_cols = table_info.columns.len;
-                    // If values count matches total columns, user provides explicit SERIAL values too
+                    // If values count matches total columns, user provides explicit SERIAL values
+                    // too
                     const skip_autoinc = user_vals.len < all_cols;
                     _ = non_autoinc_cols;
                     var vi: usize = 0;
@@ -5144,7 +6129,9 @@ pub const Database = struct {
                         if (skip_autoinc and tc.flags.autoincrement) continue;
                         if (vi < user_vals.len) {
                             vals[ti].free(self.allocator);
-                            vals[ti] = user_vals[vi].dupe(self.allocator) catch return EngineError.OutOfMemory;
+                            vals[ti] = user_vals[vi].dupe(
+                                self.allocator,
+                            ) catch return EngineError.OutOfMemory;
                             vi += 1;
                         }
                     }
@@ -5153,7 +6140,10 @@ pub const Database = struct {
                 // Fill in default values for columns that weren't provided
                 for (table_info.columns, 0..) |col, ti| {
                     if (vals[ti] == .null_value and col.flags.has_default) {
-                        if (self.catalog.getDefaultExpr(actual_table, col.name) catch null) |expr_sql| {
+                        if (self.catalog.getDefaultExpr(
+                            actual_table,
+                            col.name,
+                        ) catch null) |expr_sql| {
                             defer self.allocator.free(expr_sql);
                             vals[ti] = evalDefaultExprToValue(expr_sql, self.allocator);
                         }
@@ -5161,12 +6151,19 @@ pub const Database = struct {
                 }
 
                 // Build column names for row context (needed for generated col evaluation)
-                const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+                const col_names = self.allocator.alloc(
+                    []const u8,
+                    table_info.columns.len,
+                ) catch return EngineError.OutOfMemory;
                 defer self.allocator.free(col_names);
                 for (table_info.columns, 0..) |col, ci| col_names[ci] = col.name;
 
                 // Evaluate generated columns
-                const gen_row = Row{ .columns = col_names, .values = vals, .allocator = self.allocator };
+                const gen_row = Row{
+                    .columns = col_names,
+                    .values = vals,
+                    .allocator = self.allocator,
+                };
                 for (table_info.columns, 0..) |tc, ti| {
                     if (!tc.flags.is_generated) continue;
                     if (tc.generated_expr.len == 0) continue;
@@ -5175,7 +6172,8 @@ pub const Database = struct {
                     vals[ti] = gen_val;
                 }
 
-                // Fill autoincrement columns: auto-generate if not provided, advance seq if provided
+                // Fill autoincrement columns: auto-generate if not provided, advance seq if
+                // provided
                 for (table_info.columns, 0..) |tc, ti| {
                     if (!tc.flags.autoincrement) continue;
                     if (vals[ti] == .null_value) {
@@ -5185,7 +6183,11 @@ pub const Database = struct {
                         vals[ti] = .{ .integer = next_val };
                     } else if (vals[ti] == .integer) {
                         // Explicit value provided — advance sequence if it exceeds current max
-                        self.catalog.advanceSeqIfGreater(actual_table, tc.name, vals[ti].integer) catch
+                        self.catalog.advanceSeqIfGreater(
+                            actual_table,
+                            tc.name,
+                            vals[ti].integer,
+                        ) catch
                             return EngineError.ExecutionError;
                     }
                 }
@@ -5207,7 +6209,10 @@ pub const Database = struct {
                     if (col.flags.has_check) break true;
                 } else false;
                 if (has_any_check) {
-                    const check_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+                    const check_names = self.allocator.alloc(
+                        []const u8,
+                        table_info.columns.len,
+                    ) catch return EngineError.OutOfMemory;
                     defer self.allocator.free(check_names);
                     for (table_info.columns, 0..) |col, i| check_names[i] = col.name;
                     try self.evalCheckConstraints(&table_info, check_names, vals);
@@ -5225,7 +6230,10 @@ pub const Database = struct {
 
             // RLS WITH CHECK: validate the candidate row against INSERT policies
             {
-                const rls_col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+                const rls_col_names = self.allocator.alloc(
+                    []const u8,
+                    table_info.columns.len,
+                ) catch return EngineError.OutOfMemory;
                 defer self.allocator.free(rls_col_names);
                 for (table_info.columns, 0..) |col, ci| rls_col_names[ci] = col.name;
                 try self.checkRlsWithCheck(arena, actual_table, rls_col_names, vals, .insert);
@@ -5233,13 +6241,19 @@ pub const Database = struct {
 
             // Compute MVCC header and row data
             const row_header = if (self.current_txn) |txn| blk: {
-                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                const cid = self.tm.getCurrentCid(
+                    txn.xid,
+                ) catch return EngineError.TransactionError;
                 break :blk TupleHeader.forInsert(txn.xid, cid);
             } else TupleHeader.forInsert(0, 0); // Fallback: dummy header for no-txn case
 
             // Serialize the row (with MVCC header if in a transaction)
             const row_data = if (self.current_txn) |_| blk: {
-                break :blk mvcc_mod.serializeVersionedRow(self.allocator, row_header, vals) catch return EngineError.OutOfMemory;
+                break :blk mvcc_mod.serializeVersionedRow(
+                    self.allocator,
+                    row_header,
+                    vals,
+                ) catch return EngineError.OutOfMemory;
             } else serializeRow(self.allocator, vals) catch return EngineError.OutOfMemory;
             defer self.allocator.free(row_data);
 
@@ -5265,7 +6279,10 @@ pub const Database = struct {
 
             // Update root page ID in case of B+Tree split
             if (tree.root_page_id != table_info.data_root_page_id) {
-                self.updateTableRootPage(actual_table, tree.root_page_id) catch return EngineError.StorageError;
+                self.updateTableRootPage(
+                    actual_table,
+                    tree.root_page_id,
+                ) catch return EngineError.StorageError;
                 table_info.data_root_page_id = tree.root_page_id;
             }
 
@@ -5276,7 +6293,13 @@ pub const Database = struct {
             // (at key_buf) — undo-log wiring for issue #125 only covers the plain
             // path here; ON CONFLICT gets its own undo entry in a later step.
             var via_on_conflict_update = false;
-            self.insertIndexEntries(actual_table, &table_info, vals, &key_buf, row_header) catch |err| {
+            self.insertIndexEntries(
+                actual_table,
+                &table_info,
+                vals,
+                &key_buf,
+                row_header,
+            ) catch |err| {
                 if (err != error.UniqueConstraintViolation) {
                     return EngineError.StorageError;
                 }
@@ -5300,18 +6323,30 @@ pub const Database = struct {
                                 for (table_info.indexes) |idx| {
                                     if (!idx.is_unique) continue;
                                     if (idx.column_index >= vals.len) continue;
-                                    const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
+                                    const idx_key = valueToIndexKey(
+                                        self.allocator,
+                                        vals[idx.column_index],
+                                    ) catch continue;
                                     defer self.allocator.free(idx_key);
                                     switch (idx.index_type) {
                                         .btree => {
                                             var idx_tree = BTree.init(self.pool, idx.root_page_id);
-                                            if (idx_tree.get(self.allocator, idx_key) catch null) |existing| {
+                                            if (idx_tree.get(
+                                                self.allocator,
+                                                idx_key,
+                                            ) catch null) |existing| {
                                                 break :blk existing;
                                             }
                                         },
                                         .hash => {
-                                            var idx_hash = HashIndex.init(self.pool, idx.root_page_id);
-                                            if (idx_hash.get(self.allocator, idx_key) catch null) |existing| {
+                                            var idx_hash = HashIndex.init(
+                                                self.pool,
+                                                idx.root_page_id,
+                                            );
+                                            if (idx_hash.get(
+                                                self.allocator,
+                                                idx_key,
+                                            ) catch null) |existing| {
                                                 break :blk existing;
                                             }
                                         },
@@ -5324,7 +6359,8 @@ pub const Database = struct {
 
                             // Read existing row from main table.
                             const existing_data = (tree.get(self.allocator, conflicting_key) catch
-                                return EngineError.StorageError) orelse return EngineError.StorageError;
+                                return EngineError.StorageError) orelse
+                                return EngineError.StorageError;
                             defer self.allocator.free(existing_data);
 
                             const existing_raw = if (isVersionedRowData(existing_data))
@@ -5354,17 +6390,24 @@ pub const Database = struct {
                                 return EngineError.OutOfMemory;
                             var excluded_inited: usize = 0;
                             defer {
-                                for (excluded_names[0..excluded_inited]) |en| self.allocator.free(en);
+                                for (excluded_names[0..excluded_inited]) |en| self.allocator.free(
+                                    en,
+                                );
                                 self.allocator.free(excluded_names);
                             }
                             for (upsert_col_names, 0..) |cn, i| {
-                                excluded_names[i] = std.fmt.allocPrint(self.allocator, "excluded.{s}", .{cn}) catch
+                                excluded_names[i] = std.fmt.allocPrint(
+                                    self.allocator,
+                                    "excluded.{s}",
+                                    .{cn},
+                                ) catch
                                     return EngineError.OutOfMemory;
                                 excluded_inited += 1;
                             }
 
                             // Combined row: existing values first, then excluded values.
-                            // EXCLUDED.col → new row value; col / table.col → existing row value.
+                            // EXCLUDED.col → new row value; col / table.col → existing row
+                            // value.
                             const combined_cols = self.allocator.alloc([]const u8, n_cols * 2) catch
                                 return EngineError.OutOfMemory;
                             defer self.allocator.free(combined_cols);
@@ -5374,9 +6417,11 @@ pub const Database = struct {
 
                             for (0..n_cols) |i| {
                                 combined_cols[i] = upsert_col_names[i];
-                                combined_values[i] = if (i < existing_vals.len) existing_vals[i] else .null_value;
+                                combined_values[i] =
+                                    if (i < existing_vals.len) existing_vals[i] else .null_value;
                                 combined_cols[n_cols + i] = excluded_names[i];
-                                combined_values[n_cols + i] = if (i < vals.len) vals[i] else .null_value;
+                                combined_values[n_cols + i] =
+                                    if (i < vals.len) vals[i] else .null_value;
                             }
 
                             var combined_row = Row{
@@ -5394,12 +6439,19 @@ pub const Database = struct {
                                 self.allocator.free(updated_vals);
                             }
                             for (existing_vals, 0..) |v, i| {
-                                updated_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                                updated_vals[i] = v.dupe(
+                                    self.allocator,
+                                ) catch return EngineError.OutOfMemory;
                                 updated_inited += 1;
                             }
 
                             for (oc.assignments) |assign| {
-                                const new_val = evalExpr(self.allocator, assign.value, &combined_row, null) catch continue;
+                                const new_val = evalExpr(
+                                    self.allocator,
+                                    assign.value,
+                                    &combined_row,
+                                    null,
+                                ) catch continue;
                                 var found_col = false;
                                 for (upsert_col_names, 0..) |cn, ci| {
                                     if (std.ascii.eqlIgnoreCase(cn, assign.column)) {
@@ -5419,18 +6471,35 @@ pub const Database = struct {
 
                             // Compute MVCC header for the updated row
                             const new_header = if (self.current_txn) |txn| blk: {
-                                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                                const cid = self.tm.getCurrentCid(
+                                    txn.xid,
+                                ) catch return EngineError.TransactionError;
                                 break :blk TupleHeader.forInsert(txn.xid, cid);
-                            } else TupleHeader.forInsert(0, 0); // Fallback: dummy header for no-txn case
+                                // Fallback: dummy header for no-txn case.
+                            } else TupleHeader.forInsert(0, 0);
 
                             const new_row_data = if (self.current_txn) |_| blk: {
-                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, new_header, updated_vals) catch return EngineError.OutOfMemory;
-                            } else serializeRow(self.allocator, updated_vals) catch return EngineError.OutOfMemory;
+                                break :blk mvcc_mod.serializeVersionedRow(
+                                    self.allocator,
+                                    new_header,
+                                    updated_vals,
+                                ) catch return EngineError.OutOfMemory;
+                            } else serializeRow(self.allocator, updated_vals) catch
+                                return EngineError.OutOfMemory;
                             defer self.allocator.free(new_row_data);
 
-                            tree.insert(conflicting_key, new_row_data) catch return EngineError.StorageError;
+                            tree.insert(
+                                conflicting_key,
+                                new_row_data,
+                            ) catch return EngineError.StorageError;
 
-                            self.insertIndexEntries(actual_table, &table_info, updated_vals, conflicting_key, new_header) catch |ie| {
+                            self.insertIndexEntries(
+                                actual_table,
+                                &table_info,
+                                updated_vals,
+                                conflicting_key,
+                                new_header,
+                            ) catch |ie| {
                                 return if (ie == error.UniqueConstraintViolation)
                                     EngineError.UniqueConstraintViolation
                                 else
@@ -5442,7 +6511,12 @@ pub const Database = struct {
                             // are still in scope here (their defers fire at the end
                             // of this switch arm) and recordUndo dupes both buffers
                             // internally, so it's safe to pass them directly.
-                            self.recordUndo(actual_table, conflicting_key, existing_data, new_row_data) catch return EngineError.OutOfMemory;
+                            self.recordUndo(
+                                actual_table,
+                                conflicting_key,
+                                existing_data,
+                                new_row_data,
+                            ) catch return EngineError.OutOfMemory;
 
                             next_key -= 1;
                             insert_succeeded = true;
@@ -5454,7 +6528,8 @@ pub const Database = struct {
                 }
             };
 
-            // For successful inserts (no conflict or conflict handled), add to collection and increment count
+            // For successful inserts (no conflict or conflict handled), add to collection and
+            // increment count
             if (insert_succeeded) {
                 // Record physical undo for plain inserts (issue #125 fix, step
                 // 2/8). ON CONFLICT DO UPDATE already recorded its own undo entry
@@ -5462,11 +6537,19 @@ pub const Database = struct {
                 // (it `continue`s after retracting the row), so no entry is left
                 // behind for it either.
                 if (!via_on_conflict_update) {
-                    self.recordUndo(actual_table, &key_buf, null, row_data) catch return EngineError.OutOfMemory;
+                    self.recordUndo(
+                        actual_table,
+                        &key_buf,
+                        null,
+                        row_data,
+                    ) catch return EngineError.OutOfMemory;
                 }
 
                 // Always collect row for RETURNING and trigger evaluation
-                const row_copy = self.allocator.alloc(Value, vals.len) catch return EngineError.OutOfMemory;
+                const row_copy = self.allocator.alloc(
+                    Value,
+                    vals.len,
+                ) catch return EngineError.OutOfMemory;
                 for (vals, 0..) |v, i| {
                     row_copy[i] = try v.dupe(self.allocator);
                 }
@@ -5481,7 +6564,8 @@ pub const Database = struct {
             self.auto_vacuum.recordModification(actual_table, rows_inserted, 0, 0) catch {};
         }
 
-        // Fire AFTER INSERT triggers (STATEMENT fires once, ROW fires per successfully inserted row)
+        // Fire AFTER INSERT triggers (STATEMENT fires once, ROW fires per successfully inserted
+        // row)
         if (rows_inserted > 0) {
             // For ROW-level triggers with WHEN conditions that reference NEW, evaluate per-row
             const triggers_after = self.catalog.listTriggersForTable(
@@ -5527,7 +6611,15 @@ pub const Database = struct {
                                         .new_values = inserted_rows.items[fpi],
                                         .old_values = null,
                                     };
-                                    self.fireTriggers(actual_table, .insert, .after, rows_that_pass, insert_ctx, true, null);
+                                    self.fireTriggers(
+                                        actual_table,
+                                        .insert,
+                                        .after,
+                                        rows_that_pass,
+                                        insert_ctx,
+                                        true,
+                                        null,
+                                    );
                                 }
                             }
                             break; // Only evaluate once
@@ -5542,7 +6634,15 @@ pub const Database = struct {
                         .new_values = inserted_rows.items[0],
                         .old_values = null,
                     } else null;
-                    self.fireTriggers(actual_table, .insert, .after, rows_inserted, insert_ctx, false, null);
+                    self.fireTriggers(
+                        actual_table,
+                        .insert,
+                        .after,
+                        rows_inserted,
+                        insert_ctx,
+                        false,
+                        null,
+                    );
                 }
             } else {
                 const insert_ctx: ?TriggerRowContext = if (inserted_rows.items.len > 0) .{
@@ -5550,7 +6650,15 @@ pub const Database = struct {
                     .new_values = inserted_rows.items[0],
                     .old_values = null,
                 } else null;
-                self.fireTriggers(actual_table, .insert, .after, rows_inserted, insert_ctx, false, null);
+                self.fireTriggers(
+                    actual_table,
+                    .insert,
+                    .after,
+                    rows_inserted,
+                    insert_ctx,
+                    false,
+                    null,
+                );
             }
         }
 
@@ -5697,7 +6805,12 @@ pub const Database = struct {
     }
 
     /// Update an index's root page ID in the catalog after a B+Tree split.
-    fn updateIndexRootPage(self: *Database, table_name: []const u8, col_name: []const u8, new_idx_root: u32) !void {
+    fn updateIndexRootPage(
+        self: *Database,
+        table_name: []const u8,
+        col_name: []const u8,
+        new_idx_root: u32,
+    ) !void {
         var info = try self.catalog.getTable(table_name);
         defer info.deinit(self.allocator);
 
@@ -5724,10 +6837,17 @@ pub const Database = struct {
         try self.catalog.tree.insert(table_name, value);
     }
 
-    // ── Index Maintenance ─────────────────────────────────────────────
+    // ── Index Maintenance ──────────────────────
 
     /// Insert index entries for all indexed columns of a newly inserted row.
-    fn insertIndexEntries(self: *Database, table_name: []const u8, table_info: *const catalog_mod.TableInfo, vals: []const Value, row_key: []const u8, header: TupleHeader) !void {
+    fn insertIndexEntries(
+        self: *Database,
+        table_name: []const u8,
+        table_info: *const catalog_mod.TableInfo,
+        vals: []const Value,
+        row_key: []const u8,
+        header: TupleHeader,
+    ) !void {
         for (table_info.indexes) |idx| {
             if (idx.column_index >= vals.len) continue;
             const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
@@ -5757,7 +6877,10 @@ pub const Database = struct {
                             for (table_info.columns, 0..) |col, col_idx| {
                                 if (std.mem.eql(u8, col.name, included_name)) {
                                     if (col_idx < vals.len) {
-                                        try included_vals_list.append(self.allocator, vals[col_idx]);
+                                        try included_vals_list.append(
+                                            self.allocator,
+                                            vals[col_idx],
+                                        );
                                     }
                                     break;
                                 }
@@ -5765,7 +6888,12 @@ pub const Database = struct {
                         }
 
                         // Encode covering entry
-                        const covering_entry = try index_entry_mod.encodeIndexEntry(self.allocator, row_key, header, included_vals_list.items);
+                        const covering_entry = try index_entry_mod.encodeIndexEntry(
+                            self.allocator,
+                            row_key,
+                            header,
+                            included_vals_list.items,
+                        );
                         break :blk covering_entry;
                     } else blk: {
                         // Plain row_key dupe (backward compat)
@@ -5787,7 +6915,11 @@ pub const Database = struct {
                     try idx_tree.insert(btree_key, idx_val);
 
                     if (idx_tree.root_page_id != idx.root_page_id) {
-                        self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
+                        self.updateIndexRootPage(
+                            table_name,
+                            idx.column_name,
+                            idx_tree.root_page_id,
+                        ) catch {};
                     }
                 },
                 .hash => {
@@ -5824,7 +6956,11 @@ pub const Database = struct {
                     }
                     try idx_tree.insert(idx_key, idx_val);
                     if (idx_tree.root_page_id != idx.root_page_id) {
-                        self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
+                        self.updateIndexRootPage(
+                            table_name,
+                            idx.column_name,
+                            idx_tree.root_page_id,
+                        ) catch {};
                     }
                 },
                 .gin => {
@@ -5832,8 +6968,16 @@ pub const Database = struct {
                     // native routing to rowid tables (row_key.len == 8); any other row_key
                     // width falls back to B+Tree semantics like a scalar-column GIN index.
                     if (idx.gin_opclass != .none and row_key.len == 8) {
-                        var gin = gin_index_mod.GIN.init(self.allocator, self.pool, idx.root_page_id, ginOpClassImpl(idx.gin_opclass)) catch return error.StorageError;
-                        const col_bytes = executor_mod.serializeValueBytes(self.allocator, vals[idx.column_index]) catch return error.OutOfMemory;
+                        var gin = gin_index_mod.GIN.init(
+                            self.allocator,
+                            self.pool,
+                            idx.root_page_id,
+                            ginOpClassImpl(idx.gin_opclass),
+                        ) catch return error.StorageError;
+                        const col_bytes = executor_mod.serializeValueBytes(
+                            self.allocator,
+                            vals[idx.column_index],
+                        ) catch return error.OutOfMemory;
                         defer self.allocator.free(col_bytes);
                         const row_key_u64 = std.mem.readInt(u64, row_key[0..8], .big);
                         const tid = gin_index_mod.ItemPointer.fromU64(row_key_u64);
@@ -5855,7 +6999,11 @@ pub const Database = struct {
                         }
                         try idx_tree.insert(idx_key, idx_val);
                         if (idx_tree.root_page_id != idx.root_page_id) {
-                            self.updateIndexRootPage(table_name, idx.column_name, idx_tree.root_page_id) catch {};
+                            self.updateIndexRootPage(
+                                table_name,
+                                idx.column_name,
+                                idx_tree.root_page_id,
+                            ) catch {};
                         }
                     }
                 },
@@ -5864,7 +7012,12 @@ pub const Database = struct {
     }
 
     /// Remove index entries for all indexed columns of a row being deleted.
-    fn deleteIndexEntries(self: *Database, table_info: *const catalog_mod.TableInfo, vals: []const Value, row_key: []const u8) void {
+    fn deleteIndexEntries(
+        self: *Database,
+        table_info: *const catalog_mod.TableInfo,
+        vals: []const Value,
+        row_key: []const u8,
+    ) void {
         for (table_info.indexes) |idx| {
             if (idx.column_index >= vals.len) continue;
             const idx_key = valueToIndexKey(self.allocator, vals[idx.column_index]) catch continue;
@@ -5875,7 +7028,11 @@ pub const Database = struct {
                 .btree => {
                     var idx_tree = BTree.init(self.pool, idx.root_page_id);
                     if (idx.composite_key) {
-                        const btree_key = executor_mod.buildCompositeIndexKey(self.allocator, idx_key, row_key) catch continue;
+                        const btree_key = executor_mod.buildCompositeIndexKey(
+                            self.allocator,
+                            idx_key,
+                            row_key,
+                        ) catch continue;
                         defer self.allocator.free(btree_key);
                         idx_tree.delete(btree_key) catch {};
                     } else {
@@ -5893,8 +7050,16 @@ pub const Database = struct {
                 .gin => {
                     // See insertIndexEntries: native GIN only applies to 8-byte rowid keys.
                     if (idx.gin_opclass != .none and row_key.len == 8) {
-                        var gin = gin_index_mod.GIN.init(self.allocator, self.pool, idx.root_page_id, ginOpClassImpl(idx.gin_opclass)) catch return;
-                        const col_bytes = executor_mod.serializeValueBytes(self.allocator, vals[idx.column_index]) catch return;
+                        var gin = gin_index_mod.GIN.init(
+                            self.allocator,
+                            self.pool,
+                            idx.root_page_id,
+                            ginOpClassImpl(idx.gin_opclass),
+                        ) catch return;
+                        const col_bytes = executor_mod.serializeValueBytes(
+                            self.allocator,
+                            vals[idx.column_index],
+                        ) catch return;
                         defer self.allocator.free(col_bytes);
                         const row_key_u64 = std.mem.readInt(u64, row_key[0..8], .big);
                         const tid = gin_index_mod.ItemPointer.fromU64(row_key_u64);
@@ -5945,7 +7110,11 @@ pub const Database = struct {
             .date => |d| std.fmt.allocPrint(allocator, "DATE '{d}'", .{d}),
             .time => |t| std.fmt.allocPrint(allocator, "TIME '{d}'", .{t}),
             .timestamp => |ts| std.fmt.allocPrint(allocator, "TIMESTAMP '{d}'", .{ts}),
-            .interval => |i| std.fmt.allocPrint(allocator, "INTERVAL '{d} {d} {d}'", .{ i.months, i.days, i.micros }),
+            .interval => |i| std.fmt.allocPrint(
+                allocator,
+                "INTERVAL '{d} {d} {d}'",
+                .{ i.months, i.days, i.micros },
+            ),
             .numeric => |n| executor_mod.formatNumeric(allocator, n),
             .uuid => |u| blk: {
                 var buf = std.ArrayListUnmanaged(u8){};
@@ -5988,7 +7157,11 @@ pub const Database = struct {
     /// Returns true if the condition is satisfied, false otherwise.
     /// If the condition references NEW/OLD, evaluates against the provided context.
     /// If the condition doesn't reference NEW/OLD, evaluates as a constant expression.
-    fn evaluateTriggerWhenCondition(self: *Database, cond: []const u8, ctx: TriggerRowContext) bool {
+    fn evaluateTriggerWhenCondition(
+        self: *Database,
+        cond: []const u8,
+        ctx: TriggerRowContext,
+    ) bool {
         const has_row_ref = containsIgnoreCaseSubstring(cond, "new.") or
             containsIgnoreCaseSubstring(cond, "old.");
 
@@ -5996,7 +7169,11 @@ pub const Database = struct {
             const eval_cond = substituteRowRefs(self.allocator, cond, ctx) catch return false;
             defer self.allocator.free(eval_cond);
 
-            const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{eval_cond}) catch return false;
+            const when_sql = std.fmt.allocPrint(
+                self.allocator,
+                "SELECT ({s})",
+                .{eval_cond},
+            ) catch return false;
             defer self.allocator.free(when_sql);
             var cond_result = self.execSQLUnlocked(when_sql) catch return false;
             defer cond_result.close(self.allocator);
@@ -6013,7 +7190,11 @@ pub const Database = struct {
         }
 
         // Evaluate condition as constant (no NEW/OLD references)
-        const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{cond}) catch return false;
+        const when_sql = std.fmt.allocPrint(
+            self.allocator,
+            "SELECT ({s})",
+            .{cond},
+        ) catch return false;
         defer self.allocator.free(when_sql);
         var cond_result = self.execSQLUnlocked(when_sql) catch return false;
         defer cond_result.close(self.allocator);
@@ -6029,7 +7210,8 @@ pub const Database = struct {
         return is_truthy;
     }
 
-    /// Substitute NEW.col and OLD.col references in a WHEN condition string with SQL literal values.
+    /// Substitute NEW.col and OLD.col references in a WHEN condition string with SQL literal
+    /// values.
     fn substituteRowRefs(allocator: Allocator, cond: []const u8, ctx: TriggerRowContext) ![]u8 {
         var result = std.ArrayListUnmanaged(u8){};
         errdefer result.deinit(allocator);
@@ -6047,7 +7229,9 @@ pub const Database = struct {
                 // Find the identifier after NEW. or OLD.
                 const name_start = i + 4;
                 var name_end = name_start;
-                while (name_end < cond.len and (std.ascii.isAlphanumeric(cond[name_end]) or cond[name_end] == '_')) {
+                while (name_end < cond.len and
+                    (std.ascii.isAlphanumeric(cond[name_end]) or cond[name_end] == '_'))
+                {
                     name_end += 1;
                 }
 
@@ -6134,7 +7318,8 @@ pub const Database = struct {
                     const has_row_ref = containsIgnoreCaseSubstring(cond, "new.") or
                         containsIgnoreCaseSubstring(cond, "old.");
 
-                    // Build the condition SQL to evaluate — substitute row refs if context available
+                    // Build the condition SQL to evaluate — substitute row refs if context
+                    // available
                     const eval_cond: []const u8 = if (has_row_ref and ctx != null)
                         substituteRowRefs(self.allocator, cond, ctx.?) catch continue
                     else if (has_row_ref)
@@ -6143,7 +7328,11 @@ pub const Database = struct {
                         self.allocator.dupe(u8, cond) catch continue;
                     defer self.allocator.free(eval_cond);
 
-                    const when_sql = std.fmt.allocPrint(self.allocator, "SELECT ({s})", .{eval_cond}) catch continue;
+                    const when_sql = std.fmt.allocPrint(
+                        self.allocator,
+                        "SELECT ({s})",
+                        .{eval_cond},
+                    ) catch continue;
                     defer self.allocator.free(when_sql);
                     var cond_result = self.execSQLUnlocked(when_sql) catch continue;
                     defer cond_result.close(self.allocator);
@@ -6182,7 +7371,7 @@ pub const Database = struct {
         return false;
     }
 
-    // ── UPDATE execution ──────────────────────────────────────────────
+    // ── UPDATE execution ───────────────────────
 
     fn executeUpdate(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
         defer {
@@ -6193,7 +7382,7 @@ pub const Database = struct {
         // Check if write operations are allowed (standby mode check)
         self.standby_coordinator.checkWriteAllowed() catch |err| {
             return switch (err) {
-                StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                error.WriteOperationNotAllowed => EngineError.TransactionError,
                 else => EngineError.ExecutionError,
             };
         };
@@ -6293,7 +7482,10 @@ pub const Database = struct {
         var tree = BTree.init(self.pool, table_info.data_root_page_id);
 
         // Build column names
-        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+        const col_names = self.allocator.alloc(
+            []const u8,
+            table_info.columns.len,
+        ) catch return EngineError.OutOfMemory;
         defer self.allocator.free(col_names);
         for (table_info.columns, 0..) |col, i| {
             col_names[i] = col.name;
@@ -6320,7 +7512,15 @@ pub const Database = struct {
         defer cursor.deinit();
         cursor.seekFirst() catch return EngineError.StorageError;
 
-        const UpdateEntry = struct { key: []u8, value: []u8, old_values: []Value, original_xmin: u32, header: TupleHeader, raw_before: []u8 };
+        const UpdateEntry =
+            struct {
+                key: []u8,
+                value: []u8,
+                old_values: []Value,
+                original_xmin: u32,
+                header: TupleHeader,
+                raw_before: []u8,
+            };
 
         // Collect key-value pairs to update (can't modify B+Tree while iterating)
         var updates = std.ArrayListUnmanaged(UpdateEntry){};
@@ -6352,9 +7552,17 @@ pub const Database = struct {
             if (isVersionedRowData(entry.value)) {
                 // MVCC row: check visibility first
                 if (mvcc_ctx) |ctx| {
-                    const hdr = TupleHeader.deserialize(entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
+                    const hdr = TupleHeader.deserialize(
+                        entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE],
+                    );
                     original_xmin = hdr.xmin; // Save for later comparison after lock
-                    if (!mvcc_mod.isTupleVisibleWithTm(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    if (!mvcc_mod.isTupleVisibleWithTm(
+                        hdr,
+                        ctx.snapshot,
+                        ctx.current_xid,
+                        ctx.current_cid,
+                        ctx.tm,
+                    )) {
                         self.allocator.free(entry.value);
                         continue;
                     }
@@ -6397,7 +7605,10 @@ pub const Database = struct {
                         }
                     }
                 }
-                values = executor_mod.deserializeRow(self.allocator, entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
+                values = executor_mod.deserializeRow(
+                    self.allocator,
+                    entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..],
+                ) catch {
                     self.allocator.free(entry.value);
                     continue;
                 };
@@ -6471,8 +7682,16 @@ pub const Database = struct {
             if (isVersionedRowData(fresh_value_bytes)) {
                 // MVCC row: check visibility of the fresh version
                 if (mvcc_ctx) |ctx| {
-                    const fresh_hdr = TupleHeader.deserialize(fresh_value_bytes[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                    if (!mvcc_mod.isTupleVisibleWithTm(fresh_hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    const fresh_hdr = TupleHeader.deserialize(
+                        fresh_value_bytes[1..][0..mvcc_mod.TUPLE_HEADER_SIZE],
+                    );
+                    if (!mvcc_mod.isTupleVisibleWithTm(
+                        fresh_hdr,
+                        ctx.snapshot,
+                        ctx.current_xid,
+                        ctx.current_cid,
+                        ctx.tm,
+                    )) {
                         // Row became invisible (e.g., updated by another transaction)
                         for (row.values) |v| v.free(self.allocator);
                         self.allocator.free(row.values);
@@ -6484,14 +7703,18 @@ pub const Database = struct {
                     if (self.current_txn) |txn| {
                         if (txn.isolation == .serializable) {
                             // Case 1: Original row was versioned, check if xmin changed
-                            if (original_xmin != mvcc_mod.INVALID_XID and fresh_hdr.xmin != original_xmin) {
+                            if (original_xmin != mvcc_mod.INVALID_XID and
+                                fresh_hdr.xmin != original_xmin)
+                            {
                                 for (row.values) |v| v.free(self.allocator);
                                 self.allocator.free(row.values);
                                 return EngineError.SerializationFailure;
                             }
                             // Case 2: Original row was non-versioned, now it's versioned
                             // This means another transaction modified it first
-                            if (original_xmin == mvcc_mod.INVALID_XID and fresh_hdr.xmin != ctx.current_xid) {
+                            if (original_xmin == mvcc_mod.INVALID_XID and
+                                fresh_hdr.xmin != ctx.current_xid)
+                            {
                                 for (row.values) |v| v.free(self.allocator);
                                 self.allocator.free(row.values);
                                 return EngineError.SerializationFailure;
@@ -6499,13 +7722,19 @@ pub const Database = struct {
                         }
                     }
                 }
-                fresh_values = executor_mod.deserializeRow(self.allocator, fresh_value_bytes[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
+                fresh_values = executor_mod.deserializeRow(
+                    self.allocator,
+                    fresh_value_bytes[mvcc_mod.MVCC_ROW_OVERHEAD..],
+                ) catch {
                     for (row.values) |v| v.free(self.allocator);
                     self.allocator.free(row.values);
                     continue;
                 };
             } else {
-                fresh_values = executor_mod.deserializeRow(self.allocator, fresh_value_bytes) catch {
+                fresh_values = executor_mod.deserializeRow(
+                    self.allocator,
+                    fresh_value_bytes,
+                ) catch {
                     for (row.values) |v| v.free(self.allocator);
                     self.allocator.free(row.values);
                     continue;
@@ -6617,7 +7846,11 @@ pub const Database = struct {
 
             // Re-serialize (with MVCC header if in a transaction)
             const new_data = if (self.current_txn) |_| blk: {
-                break :blk mvcc_mod.serializeVersionedRow(self.allocator, update_header, row.values) catch {
+                break :blk mvcc_mod.serializeVersionedRow(
+                    self.allocator,
+                    update_header,
+                    row.values,
+                ) catch {
                     self.allocator.free(raw_before);
                     for (old_values) |ov| ov.free(self.allocator);
                     self.allocator.free(old_values);
@@ -6644,7 +7877,17 @@ pub const Database = struct {
                 return EngineError.OutOfMemory;
             };
 
-            updates.append(self.allocator, .{ .key = key_copy, .value = new_data, .old_values = old_values, .original_xmin = original_xmin, .header = update_header, .raw_before = raw_before }) catch {
+            updates.append(
+                self.allocator,
+                .{
+                    .key = key_copy,
+                    .value = new_data,
+                    .old_values = old_values,
+                    .original_xmin = original_xmin,
+                    .header = update_header,
+                    .raw_before = raw_before,
+                },
+            ) catch {
                 self.allocator.free(raw_before);
                 self.allocator.free(key_copy);
                 self.allocator.free(new_data);
@@ -6665,7 +7908,12 @@ pub const Database = struct {
             // Record physical undo before applying the change (issue #125 fix,
             // step 4/8): before_data is the raw pre-update row bytes, after_data
             // is the raw post-update row bytes that get written into the tree.
-            self.recordUndo(actual_table, item.key, item.raw_before, item.value) catch return EngineError.OutOfMemory;
+            self.recordUndo(
+                actual_table,
+                item.key,
+                item.raw_before,
+                item.value,
+            ) catch return EngineError.OutOfMemory;
 
             // Remove old index entries
             self.deleteIndexEntries(&table_info, item.old_values, item.key);
@@ -6683,7 +7931,13 @@ pub const Database = struct {
                 for (new_values) |v| v.free(self.allocator);
                 self.allocator.free(new_values);
             }
-            self.insertIndexEntries(actual_table, &table_info, new_values, item.key, item.header) catch {};
+            self.insertIndexEntries(
+                actual_table,
+                &table_info,
+                new_values,
+                item.key,
+                item.header,
+            ) catch {};
         }
 
         // Update root page if needed
@@ -6693,7 +7947,12 @@ pub const Database = struct {
 
         // Track updates for auto-vacuum (each update creates a dead tuple)
         if (rows_updated > 0) {
-            self.auto_vacuum.recordModification(actual_table, 0, @intCast(rows_updated), 0) catch {};
+            self.auto_vacuum.recordModification(
+                actual_table,
+                0,
+                @intCast(rows_updated),
+                0,
+            ) catch {};
         }
 
         // Fire AFTER UPDATE triggers (STATEMENT fires once, ROW fires per successfully updated row)
@@ -6731,7 +7990,10 @@ pub const Database = struct {
                                     upd.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
                                 else
                                     upd.value;
-                                const new_vals = executor_mod.deserializeRow(self.allocator, data) catch continue;
+                                const new_vals = executor_mod.deserializeRow(
+                                    self.allocator,
+                                    data,
+                                ) catch continue;
                                 defer {
                                     if (first_passing_idx == null or first_passing_idx.? != ri) {
                                         for (new_vals) |v| v.free(self.allocator);
@@ -6759,7 +8021,15 @@ pub const Database = struct {
                                         .new_values = first_new_vals,
                                         .old_values = updates.items[fpi].old_values,
                                     };
-                                    self.fireTriggers(actual_table, .update, .after, rows_that_pass, upd_ctx, true, updated_cols_slice);
+                                    self.fireTriggers(
+                                        actual_table,
+                                        .update,
+                                        .after,
+                                        rows_that_pass,
+                                        upd_ctx,
+                                        true,
+                                        updated_cols_slice,
+                                    );
                                 }
                             }
                             upd_when_evaluated = true;
@@ -6782,7 +8052,10 @@ pub const Database = struct {
                             first_update.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
                         else
                             first_update.value;
-                        update_new_vals = executor_mod.deserializeRow(self.allocator, idx_data_u) catch break :blk null;
+                        update_new_vals = executor_mod.deserializeRow(
+                            self.allocator,
+                            idx_data_u,
+                        ) catch break :blk null;
                         break :blk .{
                             .col_names = col_names,
                             .new_values = update_new_vals,
@@ -6791,7 +8064,15 @@ pub const Database = struct {
                     }
                     break :blk null;
                 };
-                self.fireTriggers(actual_table, .update, .after, @intCast(rows_updated), update_ctx, false, updated_cols_slice);
+                self.fireTriggers(
+                    actual_table,
+                    .update,
+                    .after,
+                    @intCast(rows_updated),
+                    update_ctx,
+                    false,
+                    updated_cols_slice,
+                );
             }
         }
 
@@ -6835,7 +8116,10 @@ pub const Database = struct {
                     item.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
                 else
                     item.value;
-                const new_values = executor_mod.deserializeRow(self.allocator, idx_data) catch continue;
+                const new_values = executor_mod.deserializeRow(
+                    self.allocator,
+                    idx_data,
+                ) catch continue;
                 defer {
                     for (new_values) |v| v.free(self.allocator);
                     self.allocator.free(new_values);
@@ -6908,7 +8192,7 @@ pub const Database = struct {
         };
     }
 
-    // ── DELETE execution ──────────────────────────────────────────────
+    // ── DELETE execution ───────────────────────
 
     fn executeDelete(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
         defer {
@@ -6919,7 +8203,7 @@ pub const Database = struct {
         // Check if write operations are allowed (standby mode check)
         self.standby_coordinator.checkWriteAllowed() catch |err| {
             return switch (err) {
-                StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                error.WriteOperationNotAllowed => EngineError.TransactionError,
                 else => EngineError.ExecutionError,
             };
         };
@@ -7002,7 +8286,10 @@ pub const Database = struct {
 
         var tree = BTree.init(self.pool, table_info.data_root_page_id);
 
-        const col_names = self.allocator.alloc([]const u8, table_info.columns.len) catch return EngineError.OutOfMemory;
+        const col_names = self.allocator.alloc(
+            []const u8,
+            table_info.columns.len,
+        ) catch return EngineError.OutOfMemory;
         defer self.allocator.free(col_names);
         for (table_info.columns, 0..) |col, i| {
             col_names[i] = col.name;
@@ -7044,8 +8331,16 @@ pub const Database = struct {
             if (isVersionedRowData(entry.value)) {
                 // MVCC row: check visibility first
                 if (mvcc_ctx_del) |ctx| {
-                    const hdr = TupleHeader.deserialize(entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE]);
-                    if (!mvcc_mod.isTupleVisibleWithTm(hdr, ctx.snapshot, ctx.current_xid, ctx.current_cid, ctx.tm)) {
+                    const hdr = TupleHeader.deserialize(
+                        entry.value[1..][0..mvcc_mod.TUPLE_HEADER_SIZE],
+                    );
+                    if (!mvcc_mod.isTupleVisibleWithTm(
+                        hdr,
+                        ctx.snapshot,
+                        ctx.current_xid,
+                        ctx.current_cid,
+                        ctx.tm,
+                    )) {
                         self.allocator.free(entry.value);
                         self.allocator.free(entry.key);
                         continue;
@@ -7062,7 +8357,10 @@ pub const Database = struct {
                         }
                     }
                 }
-                values = executor_mod.deserializeRow(self.allocator, entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]) catch {
+                values = executor_mod.deserializeRow(
+                    self.allocator,
+                    entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..],
+                ) catch {
                     self.allocator.free(entry.value);
                     self.allocator.free(entry.key);
                     continue;
@@ -7123,7 +8421,10 @@ pub const Database = struct {
             }
 
             // Mark for deletion (keep values for index maintenance, raw_value for undo)
-            deletes.append(self.allocator, .{ .key = entry.key, .values = values, .raw_value = entry.value }) catch {
+            deletes.append(
+                self.allocator,
+                .{ .key = entry.key, .values = values, .raw_value = entry.value },
+            ) catch {
                 for (values) |v| v.free(self.allocator);
                 self.allocator.free(values);
                 self.allocator.free(entry.key);
@@ -7137,7 +8438,12 @@ pub const Database = struct {
             // Record physical undo before removing the row (issue #125 fix,
             // step 3/8): before_data is the raw pre-delete row bytes,
             // after_data is null since the row no longer exists.
-            self.recordUndo(actual_table, d.key, d.raw_value, null) catch return EngineError.OutOfMemory;
+            self.recordUndo(
+                actual_table,
+                d.key,
+                d.raw_value,
+                null,
+            ) catch return EngineError.OutOfMemory;
 
             // Remove index entries before deleting the row
             self.deleteIndexEntries(&table_info, d.values, d.key);
@@ -7150,7 +8456,12 @@ pub const Database = struct {
 
         // Track deletes for auto-vacuum (each delete creates a dead tuple)
         if (rows_deleted > 0) {
-            self.auto_vacuum.recordModification(actual_table, 0, 0, @intCast(rows_deleted)) catch {};
+            self.auto_vacuum.recordModification(
+                actual_table,
+                0,
+                0,
+                @intCast(rows_deleted),
+            ) catch {};
         }
 
         // Fire AFTER DELETE triggers (STATEMENT fires once, ROW fires per successfully deleted row)
@@ -7193,7 +8504,15 @@ pub const Database = struct {
                                         .new_values = null,
                                         .old_values = deletes.items[fpi].values,
                                     };
-                                    self.fireTriggers(actual_table, .delete, .after, rows_that_pass, del_ctx, true, null);
+                                    self.fireTriggers(
+                                        actual_table,
+                                        .delete,
+                                        .after,
+                                        rows_that_pass,
+                                        del_ctx,
+                                        true,
+                                        null,
+                                    );
                                 }
                             }
                             del_when_evaluated = true;
@@ -7209,7 +8528,15 @@ pub const Database = struct {
                     .new_values = null,
                     .old_values = deletes.items[0].values,
                 } else null;
-                self.fireTriggers(actual_table, .delete, .after, @intCast(rows_deleted), del_ctx, false, null);
+                self.fireTriggers(
+                    actual_table,
+                    .delete,
+                    .after,
+                    @intCast(rows_deleted),
+                    del_ctx,
+                    false,
+                    null,
+                );
             }
         }
 
@@ -7315,7 +8642,7 @@ pub const Database = struct {
         };
     }
 
-    // ── MERGE execution ──────────────────────────────────────────────
+    // ── MERGE execution ───────────────────────
 
     /// Execute a MERGE statement.
     /// MERGE INTO target USING source ON condition
@@ -7323,12 +8650,16 @@ pub const Database = struct {
     ///   WHEN NOT MATCHED THEN INSERT
     ///   WHEN NOT MATCHED BY SOURCE THEN UPDATE/DELETE
     /// NOTE: Ownership of arena is NOT transferred — calling code (execSQL) frees it.
-    fn executeMerge(self: *Database, arena: *AstArena, merge: *const ast_mod.MergeStmt) EngineError!QueryResult {
+    fn executeMerge(
+        self: *Database,
+        arena: *AstArena,
+        merge: *const ast_mod.MergeStmt,
+    ) EngineError!QueryResult {
         _ = arena; // Arena is owned by caller (execSQL)
 
         self.standby_coordinator.checkWriteAllowed() catch |err| {
             return switch (err) {
-                StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                error.WriteOperationNotAllowed => EngineError.TransactionError,
                 else => EngineError.ExecutionError,
             };
         };
@@ -7343,20 +8674,29 @@ pub const Database = struct {
             }
         }
 
-        var target_info = self.catalog.getTable(merge.target) catch return EngineError.TableNotFound;
+        var target_info = self.catalog.getTable(
+            merge.target,
+        ) catch return EngineError.TableNotFound;
         defer target_info.deinit(self.allocator);
 
         const tgt_alias = merge.target_alias orelse merge.target;
         const tgt_cnt = target_info.columns.len;
 
         // Build target column names ("tgt_alias.colname")
-        const tgt_col_names = self.allocator.alloc([]const u8, tgt_cnt) catch return EngineError.OutOfMemory;
+        const tgt_col_names = self.allocator.alloc(
+            []const u8,
+            tgt_cnt,
+        ) catch return EngineError.OutOfMemory;
         defer {
             for (tgt_col_names) |n| self.allocator.free(n);
             self.allocator.free(tgt_col_names);
         }
         for (target_info.columns, 0..) |col, i| {
-            tgt_col_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ tgt_alias, col.name }) catch
+            tgt_col_names[i] = std.fmt.allocPrint(
+                self.allocator,
+                "{s}.{s}",
+                .{ tgt_alias, col.name },
+            ) catch
                 return EngineError.OutOfMemory;
         }
 
@@ -7375,16 +8715,25 @@ pub const Database = struct {
         // Two paths: table source vs subquery source
         switch (merge.source) {
             .table => |t| {
-                var source_info = self.catalog.getTable(t.name) catch return EngineError.TableNotFound;
+                var source_info = self.catalog.getTable(
+                    t.name,
+                ) catch return EngineError.TableNotFound;
                 defer source_info.deinit(self.allocator);
 
                 const src_alias = t.alias orelse t.name;
                 src_cnt = source_info.columns.len;
 
                 // Pre-build qualified column name arrays ("alias.colname")
-                const sc_names = self.allocator.alloc([]const u8, src_cnt) catch return EngineError.OutOfMemory;
+                const sc_names = self.allocator.alloc(
+                    []const u8,
+                    src_cnt,
+                ) catch return EngineError.OutOfMemory;
                 for (source_info.columns, 0..) |col, i| {
-                    sc_names[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ src_alias, col.name }) catch {
+                    sc_names[i] = std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}.{s}",
+                        .{ src_alias, col.name },
+                    ) catch {
                         for (sc_names[0..i]) |n| self.allocator.free(n);
                         self.allocator.free(sc_names);
                         return EngineError.OutOfMemory;
@@ -7406,28 +8755,41 @@ pub const Database = struct {
                         entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
                     else
                         entry.value;
-                    const raw_vals = deserializeRow(self.allocator, src_raw_bytes) catch return EngineError.ExecutionError;
+                    const raw_vals = deserializeRow(
+                        self.allocator,
+                        src_raw_bytes,
+                    ) catch return EngineError.ExecutionError;
                     defer {
                         for (raw_vals) |v| v.free(self.allocator);
                         self.allocator.free(raw_vals);
                     }
 
-                    const cloned_vals = self.allocator.alloc(Value, src_cnt) catch return EngineError.OutOfMemory;
+                    const cloned_vals = self.allocator.alloc(
+                        Value,
+                        src_cnt,
+                    ) catch return EngineError.OutOfMemory;
                     var cloned_inited: usize = 0;
                     errdefer {
                         for (cloned_vals[0..cloned_inited]) |v| v.free(self.allocator);
                         self.allocator.free(cloned_vals);
                     }
                     for (raw_vals, 0..) |v, i| {
-                        cloned_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                        cloned_vals[i] = v.dupe(
+                            self.allocator,
+                        ) catch return EngineError.OutOfMemory;
                         cloned_inited += 1;
                     }
-                    source_row_vals_list.append(self.allocator, cloned_vals) catch return EngineError.OutOfMemory;
+                    source_row_vals_list.append(
+                        self.allocator,
+                        cloned_vals,
+                    ) catch return EngineError.OutOfMemory;
                 }
             },
             .subquery => |sub| {
                 // Execute the subquery and collect rows
-                const sub_arena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
+                const sub_arena = self.allocator.create(
+                    AstArena,
+                ) catch return EngineError.OutOfMemory;
                 sub_arena.* = AstArena.init(self.allocator);
                 defer {
                     sub_arena.deinit();
@@ -7442,11 +8804,16 @@ pub const Database = struct {
                 var sub_opt = Optimizer.init(sub_arena);
                 const sub_optimized = sub_opt.optimize(sub_plan) catch return EngineError.PlanError;
 
-                const sub_ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+                const sub_ops = self.allocator.create(
+                    OperatorChain,
+                ) catch return EngineError.OutOfMemory;
                 sub_ops.* = .{};
                 defer sub_ops.deinit(self.allocator);
 
-                var sub_iter = self.buildIterator(sub_optimized.root, sub_ops) catch return EngineError.ExecutionError;
+                var sub_iter = self.buildIterator(
+                    sub_optimized.root,
+                    sub_ops,
+                ) catch return EngineError.ExecutionError;
                 defer sub_iter.close();
 
                 var first_row = true;
@@ -7459,9 +8826,16 @@ pub const Database = struct {
                     if (first_row) {
                         // Extract column names from first row and qualify with alias
                         src_cnt = row.columns.len;
-                        sub_col_names_buf = self.allocator.alloc([]const u8, src_cnt) catch return EngineError.OutOfMemory;
+                        sub_col_names_buf = self.allocator.alloc(
+                            []const u8,
+                            src_cnt,
+                        ) catch return EngineError.OutOfMemory;
                         for (row.columns, 0..) |col_name, i| {
-                            sub_col_names_buf[i] = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ sub.alias, col_name }) catch {
+                            sub_col_names_buf[i] = std.fmt.allocPrint(
+                                self.allocator,
+                                "{s}.{s}",
+                                .{ sub.alias, col_name },
+                            ) catch {
                                 for (sub_col_names_buf[0..i]) |n| self.allocator.free(n);
                                 self.allocator.free(sub_col_names_buf);
                                 return EngineError.OutOfMemory;
@@ -7472,17 +8846,25 @@ pub const Database = struct {
                     }
 
                     // Clone row values
-                    const cloned_vals = self.allocator.alloc(Value, row.values.len) catch return EngineError.OutOfMemory;
+                    const cloned_vals = self.allocator.alloc(
+                        Value,
+                        row.values.len,
+                    ) catch return EngineError.OutOfMemory;
                     var cloned_inited: usize = 0;
                     errdefer {
                         for (cloned_vals[0..cloned_inited]) |v| v.free(self.allocator);
                         self.allocator.free(cloned_vals);
                     }
                     for (row.values, 0..) |v, i| {
-                        cloned_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                        cloned_vals[i] = v.dupe(
+                            self.allocator,
+                        ) catch return EngineError.OutOfMemory;
                         cloned_inited += 1;
                     }
-                    source_row_vals_list.append(self.allocator, cloned_vals) catch return EngineError.OutOfMemory;
+                    source_row_vals_list.append(
+                        self.allocator,
+                        cloned_vals,
+                    ) catch return EngineError.OutOfMemory;
                 }
             },
         }
@@ -7497,7 +8879,10 @@ pub const Database = struct {
 
         // Combined column names for ON condition evaluation (tgt columns first, then src).
         // Borrows strings from tgt_col_names and src_col_names — only free the outer slice.
-        const combined_col_names = self.allocator.alloc([]const u8, tgt_cnt + src_cnt) catch return EngineError.OutOfMemory;
+        const combined_col_names = self.allocator.alloc(
+            []const u8,
+            tgt_cnt + src_cnt,
+        ) catch return EngineError.OutOfMemory;
         defer self.allocator.free(combined_col_names);
         for (tgt_col_names, 0..) |n, i| combined_col_names[i] = n;
         for (src_col_names, 0..) |n, i| combined_col_names[tgt_cnt + i] = n;
@@ -7546,14 +8931,20 @@ pub const Database = struct {
                     tgt_entry.value[mvcc_mod.MVCC_ROW_OVERHEAD..]
                 else
                     tgt_entry.value;
-                const tgt_vals = deserializeRow(self.allocator, tgt_raw_bytes) catch return EngineError.ExecutionError;
+                const tgt_vals = deserializeRow(
+                    self.allocator,
+                    tgt_raw_bytes,
+                ) catch return EngineError.ExecutionError;
                 defer {
                     for (tgt_vals) |v| v.free(self.allocator);
                     self.allocator.free(tgt_vals);
                 }
 
                 // Build combined values array for ON evaluation.
-                const combined_vals = self.allocator.alloc(Value, tgt_cnt + src_cnt) catch return EngineError.OutOfMemory;
+                const combined_vals = self.allocator.alloc(
+                    Value,
+                    tgt_cnt + src_cnt,
+                ) catch return EngineError.OutOfMemory;
                 defer {
                     for (combined_vals) |v| v.free(self.allocator);
                     self.allocator.free(combined_vals);
@@ -7562,7 +8953,9 @@ pub const Database = struct {
                     combined_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
                 }
                 for (src_vals, 0..) |v, i| {
-                    combined_vals[tgt_cnt + i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                    combined_vals[tgt_cnt + i] = v.dupe(
+                        self.allocator,
+                    ) catch return EngineError.OutOfMemory;
                 }
 
                 const combined_row = Row{
@@ -7577,9 +8970,15 @@ pub const Database = struct {
                 defer on_result.free(self.allocator);
 
                 if (on_result.isTruthy()) {
-                    matched_key = self.allocator.dupe(u8, tgt_entry.key) catch return EngineError.OutOfMemory;
+                    matched_key = self.allocator.dupe(
+                        u8,
+                        tgt_entry.key,
+                    ) catch return EngineError.OutOfMemory;
                     // Save target values for WHEN MATCHED extra_cond evaluation.
-                    const saved_tgt = self.allocator.alloc(Value, tgt_cnt) catch return EngineError.OutOfMemory;
+                    const saved_tgt = self.allocator.alloc(
+                        Value,
+                        tgt_cnt,
+                    ) catch return EngineError.OutOfMemory;
                     for (tgt_vals, 0..) |v, vi| {
                         saved_tgt[vi] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
                     }
@@ -7605,24 +9004,36 @@ pub const Database = struct {
 
                     if (clause.extra_cond) |cond| {
                         // Build combined row for extra_cond (needs both target and source).
-                        const combined_ec_vals = self.allocator.alloc(Value, tgt_cnt + src_cnt) catch return EngineError.OutOfMemory;
+                        const combined_ec_vals = self.allocator.alloc(
+                            Value,
+                            tgt_cnt + src_cnt,
+                        ) catch return EngineError.OutOfMemory;
                         defer {
                             for (combined_ec_vals) |v| v.free(self.allocator);
                             self.allocator.free(combined_ec_vals);
                         }
                         const mtv = matched_tgt_vals.?;
                         for (mtv, 0..) |v, i| {
-                            combined_ec_vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                            combined_ec_vals[i] = v.dupe(
+                                self.allocator,
+                            ) catch return EngineError.OutOfMemory;
                         }
                         for (src_vals, 0..) |v, i| {
-                            combined_ec_vals[tgt_cnt + i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                            combined_ec_vals[tgt_cnt + i] = v.dupe(
+                                self.allocator,
+                            ) catch return EngineError.OutOfMemory;
                         }
                         const combined_ec_row = Row{
                             .columns = combined_col_names,
                             .values = combined_ec_vals,
                             .allocator = self.allocator,
                         };
-                        const cond_result = evalExpr(self.allocator, cond, &combined_ec_row, null) catch
+                        const cond_result = evalExpr(
+                            self.allocator,
+                            cond,
+                            &combined_ec_row,
+                            null,
+                        ) catch
                             return EngineError.ExecutionError;
                         defer cond_result.free(self.allocator);
                         if (!cond_result.isTruthy()) continue;
@@ -7634,13 +9045,19 @@ pub const Database = struct {
                             var del_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
                             defer del_cursor.deinit();
                             del_cursor.seek(key) catch return EngineError.StorageError;
-                            const del_entry = (del_cursor.current() catch return EngineError.StorageError) orelse
+                            const del_entry =
+                                (del_cursor.current() catch return EngineError.StorageError) orelse
                                 return EngineError.ExecutionError;
                             defer self.allocator.free(del_entry.key);
                             defer self.allocator.free(del_entry.value);
 
                             // Record undo before deleting (issue #125 step 6/8)
-                            self.recordUndo(merge.target, del_entry.key, del_entry.value, null) catch return EngineError.OutOfMemory;
+                            self.recordUndo(
+                                merge.target,
+                                del_entry.key,
+                                del_entry.value,
+                                null,
+                            ) catch return EngineError.OutOfMemory;
 
                             target_tree.delete(key) catch return EngineError.StorageError;
                             rows_affected += 1;
@@ -7650,7 +9067,8 @@ pub const Database = struct {
                             var cur_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
                             defer cur_cursor.deinit();
                             cur_cursor.seek(key) catch return EngineError.StorageError;
-                            const cur_entry = (cur_cursor.current() catch return EngineError.StorageError) orelse
+                            const cur_entry =
+                                (cur_cursor.current() catch return EngineError.StorageError) orelse
                                 return EngineError.ExecutionError;
                             defer self.allocator.free(cur_entry.key);
                             defer self.allocator.free(cur_entry.value);
@@ -7666,14 +9084,19 @@ pub const Database = struct {
                                 self.allocator.free(tgt_vals);
                             }
 
-                            var updated = self.allocator.alloc(Value, tgt_vals.len) catch return EngineError.OutOfMemory;
+                            var updated = self.allocator.alloc(
+                                Value,
+                                tgt_vals.len,
+                            ) catch return EngineError.OutOfMemory;
                             var updated_inited: usize = 0;
                             errdefer {
                                 for (updated[0..updated_inited]) |v| v.free(self.allocator);
                                 self.allocator.free(updated);
                             }
                             for (tgt_vals, 0..) |v, vi| {
-                                updated[vi] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                                updated[vi] = v.dupe(
+                                    self.allocator,
+                                ) catch return EngineError.OutOfMemory;
                                 updated_inited += 1;
                             }
                             defer {
@@ -7690,7 +9113,12 @@ pub const Database = struct {
                                     }
                                 }
                                 if (col_idx) |ci| {
-                                    const new_val = evalExpr(self.allocator, assign.value, &src_row, null) catch
+                                    const new_val = evalExpr(
+                                        self.allocator,
+                                        assign.value,
+                                        &src_row,
+                                        null,
+                                    ) catch
                                         return EngineError.ExecutionError;
                                     updated[ci].free(self.allocator);
                                     updated[ci] = new_val;
@@ -7698,17 +9126,30 @@ pub const Database = struct {
                             }
 
                             const new_data = if (self.current_txn) |txn| blk: {
-                                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                                const cid = self.tm.getCurrentCid(
+                                    txn.xid,
+                                ) catch return EngineError.TransactionError;
                                 const hdr = TupleHeader.forInsert(txn.xid, cid);
-                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, hdr, updated) catch return EngineError.OutOfMemory;
-                            } else serializeRow(self.allocator, updated) catch return EngineError.OutOfMemory;
+                                break :blk mvcc_mod.serializeVersionedRow(
+                                    self.allocator,
+                                    hdr,
+                                    updated,
+                                ) catch return EngineError.OutOfMemory;
+                            } else serializeRow(self.allocator, updated) catch
+                                return EngineError.OutOfMemory;
                             defer self.allocator.free(new_data);
                             target_tree.delete(key) catch return EngineError.StorageError;
                             target_tree.insert(key, new_data) catch return EngineError.StorageError;
 
                             // Record undo after mutations succeed (issue #125 step 6/8)
-                            // cur_entry.value and new_data are still in scope (defers fire at end of block)
-                            self.recordUndo(merge.target, key, cur_entry.value, new_data) catch return EngineError.OutOfMemory;
+                            // cur_entry.value and new_data are still in scope (defers fire at end
+                            // of block)
+                            self.recordUndo(
+                                merge.target,
+                                key,
+                                cur_entry.value,
+                                new_data,
+                            ) catch return EngineError.OutOfMemory;
 
                             rows_affected += 1;
                         },
@@ -7730,7 +9171,9 @@ pub const Database = struct {
 
                     switch (clause.action) {
                         .insert => |ins| {
-                            const next_key_num = self.findNextRowKey(&target_tree) catch return EngineError.StorageError;
+                            const next_key_num = self.findNextRowKey(
+                                &target_tree,
+                            ) catch return EngineError.StorageError;
 
                             var row_vals = std.ArrayListUnmanaged(Value){};
                             defer {
@@ -7753,7 +9196,12 @@ pub const Database = struct {
                                         }
                                     }
                                     if (col_idx) |ci| {
-                                        const val = evalExpr(self.allocator, ins.values[i], &src_row, null) catch
+                                        const val = evalExpr(
+                                            self.allocator,
+                                            ins.values[i],
+                                            &src_row,
+                                            null,
+                                        ) catch
                                             return EngineError.ExecutionError;
                                         row_vals.items[ci].free(self.allocator);
                                         row_vals.items[ci] = val;
@@ -7764,27 +9212,48 @@ pub const Database = struct {
                                 for (ins.values) |expr| {
                                     const val = evalExpr(self.allocator, expr, &src_row, null) catch
                                         return EngineError.ExecutionError;
-                                    row_vals.append(self.allocator, val) catch return EngineError.OutOfMemory;
+                                    row_vals.append(
+                                        self.allocator,
+                                        val,
+                                    ) catch return EngineError.OutOfMemory;
                                 }
                             }
 
                             const row_data = if (self.current_txn) |txn| blk: {
-                                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                                const cid = self.tm.getCurrentCid(
+                                    txn.xid,
+                                ) catch return EngineError.TransactionError;
                                 const hdr = TupleHeader.forInsert(txn.xid, cid);
-                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, hdr, row_vals.items) catch return EngineError.OutOfMemory;
-                            } else serializeRow(self.allocator, row_vals.items) catch return EngineError.OutOfMemory;
+                                break :blk mvcc_mod.serializeVersionedRow(
+                                    self.allocator,
+                                    hdr,
+                                    row_vals.items,
+                                ) catch return EngineError.OutOfMemory;
+                            } else serializeRow(self.allocator, row_vals.items) catch
+                                return EngineError.OutOfMemory;
                             defer self.allocator.free(row_data);
 
                             var key_buf: [8]u8 = undefined;
                             std.mem.writeInt(u64, &key_buf, next_key_num, .big);
-                            const ins_key = self.allocator.dupe(u8, &key_buf) catch return EngineError.OutOfMemory;
+                            const ins_key = self.allocator.dupe(
+                                u8,
+                                &key_buf,
+                            ) catch return EngineError.OutOfMemory;
                             defer self.allocator.free(ins_key);
 
-                            target_tree.insert(ins_key, row_data) catch return EngineError.StorageError;
+                            target_tree.insert(
+                                ins_key,
+                                row_data,
+                            ) catch return EngineError.StorageError;
 
                             // Record undo after insert succeeds (issue #125 step 6/8)
                             // row_data is still in scope (defer fires at end of block)
-                            self.recordUndo(merge.target, ins_key, null, row_data) catch return EngineError.OutOfMemory;
+                            self.recordUndo(
+                                merge.target,
+                                ins_key,
+                                null,
+                                row_data,
+                            ) catch return EngineError.OutOfMemory;
 
                             rows_affected += 1;
                         },
@@ -7811,7 +9280,10 @@ pub const Database = struct {
                 defer self.allocator.free(entry.key);
                 defer self.allocator.free(entry.value);
                 if (!target_matched.contains(entry.key)) {
-                    const k_copy = self.allocator.dupe(u8, entry.key) catch return EngineError.OutOfMemory;
+                    const k_copy = self.allocator.dupe(
+                        u8,
+                        entry.key,
+                    ) catch return EngineError.OutOfMemory;
                     unmatched_keys.append(self.allocator, k_copy) catch {
                         self.allocator.free(k_copy);
                         return EngineError.OutOfMemory;
@@ -7823,11 +9295,13 @@ pub const Database = struct {
                 for (merge.when_clauses) |clause| {
                     if (clause.condition != .not_matched_source) continue;
                     if (clause.extra_cond) |cond| {
-                        // Evaluate AND condition using only the target row — no source row for unmatched.
+                        // Evaluate AND condition using only the target row — no source row for
+                        // unmatched.
                         var ec_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
                         defer ec_cursor.deinit();
                         ec_cursor.seek(key) catch return EngineError.StorageError;
-                        const ec_entry = (ec_cursor.current() catch return EngineError.StorageError) orelse
+                        const ec_entry =
+                            (ec_cursor.current() catch return EngineError.StorageError) orelse
                             return EngineError.ExecutionError;
                         defer self.allocator.free(ec_entry.key);
                         defer self.allocator.free(ec_entry.value);
@@ -7843,7 +9317,10 @@ pub const Database = struct {
                         }
                         // Use unqualified column names so bare references (e.g. "score") resolve.
                         // getQualifiedColumn falls back to getColumn, so qualified refs also work.
-                        const ec_col_names = self.allocator.alloc([]const u8, tgt_cnt) catch return EngineError.OutOfMemory;
+                        const ec_col_names = self.allocator.alloc(
+                            []const u8,
+                            tgt_cnt,
+                        ) catch return EngineError.OutOfMemory;
                         defer self.allocator.free(ec_col_names);
                         for (target_info.columns, 0..) |col, ci| ec_col_names[ci] = col.name;
                         const ec_row = Row{
@@ -7863,13 +9340,19 @@ pub const Database = struct {
                             var del_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
                             defer del_cursor.deinit();
                             del_cursor.seek(key) catch return EngineError.StorageError;
-                            const del_entry = (del_cursor.current() catch return EngineError.StorageError) orelse
+                            const del_entry =
+                                (del_cursor.current() catch return EngineError.StorageError) orelse
                                 return EngineError.ExecutionError;
                             defer self.allocator.free(del_entry.key);
                             defer self.allocator.free(del_entry.value);
 
                             // Record undo before deleting (issue #125 step 6/8)
-                            self.recordUndo(merge.target, del_entry.key, del_entry.value, null) catch return EngineError.OutOfMemory;
+                            self.recordUndo(
+                                merge.target,
+                                del_entry.key,
+                                del_entry.value,
+                                null,
+                            ) catch return EngineError.OutOfMemory;
 
                             target_tree.delete(key) catch return EngineError.StorageError;
                             rows_affected += 1;
@@ -7879,7 +9362,8 @@ pub const Database = struct {
                             var upd_cursor = btree_mod.Cursor.init(self.allocator, &target_tree);
                             defer upd_cursor.deinit();
                             upd_cursor.seek(key) catch return EngineError.StorageError;
-                            const upd_entry = (upd_cursor.current() catch return EngineError.StorageError) orelse
+                            const upd_entry =
+                                (upd_cursor.current() catch return EngineError.StorageError) orelse
                                 return EngineError.ExecutionError;
                             defer self.allocator.free(upd_entry.key);
                             defer self.allocator.free(upd_entry.value);
@@ -7895,14 +9379,19 @@ pub const Database = struct {
                                 self.allocator.free(upd_tgt_vals);
                             }
 
-                            var updated = self.allocator.alloc(Value, upd_tgt_vals.len) catch return EngineError.OutOfMemory;
+                            var updated = self.allocator.alloc(
+                                Value,
+                                upd_tgt_vals.len,
+                            ) catch return EngineError.OutOfMemory;
                             var updated_inited: usize = 0;
                             errdefer {
                                 for (updated[0..updated_inited]) |v| v.free(self.allocator);
                                 self.allocator.free(updated);
                             }
                             for (upd_tgt_vals, 0..) |v, vi| {
-                                updated[vi] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
+                                updated[vi] = v.dupe(
+                                    self.allocator,
+                                ) catch return EngineError.OutOfMemory;
                                 updated_inited += 1;
                             }
                             defer {
@@ -7912,8 +9401,12 @@ pub const Database = struct {
 
                             // Evaluate assignments using target row as context.
                             // Use unqualified names so bare refs (e.g. "priority") resolve;
-                            // getQualifiedColumn falls back to getColumn so qualified refs also work.
-                            const upd_col_names = self.allocator.alloc([]const u8, tgt_cnt) catch return EngineError.OutOfMemory;
+                            // getQualifiedColumn falls back to getColumn so qualified refs also
+                            // work.
+                            const upd_col_names = self.allocator.alloc(
+                                []const u8,
+                                tgt_cnt,
+                            ) catch return EngineError.OutOfMemory;
                             defer self.allocator.free(upd_col_names);
                             for (target_info.columns, 0..) |col, ci| upd_col_names[ci] = col.name;
                             const upd_row_ctx = Row{
@@ -7931,7 +9424,12 @@ pub const Database = struct {
                                     }
                                 }
                                 if (col_idx) |ci| {
-                                    const new_val = evalExpr(self.allocator, assign.value, &upd_row_ctx, null) catch
+                                    const new_val = evalExpr(
+                                        self.allocator,
+                                        assign.value,
+                                        &upd_row_ctx,
+                                        null,
+                                    ) catch
                                         return EngineError.ExecutionError;
                                     updated[ci].free(self.allocator);
                                     updated[ci] = new_val;
@@ -7939,17 +9437,30 @@ pub const Database = struct {
                             }
 
                             const new_data = if (self.current_txn) |txn| blk: {
-                                const cid = self.tm.getCurrentCid(txn.xid) catch return EngineError.TransactionError;
+                                const cid = self.tm.getCurrentCid(
+                                    txn.xid,
+                                ) catch return EngineError.TransactionError;
                                 const hdr = TupleHeader.forInsert(txn.xid, cid);
-                                break :blk mvcc_mod.serializeVersionedRow(self.allocator, hdr, updated) catch return EngineError.OutOfMemory;
-                            } else serializeRow(self.allocator, updated) catch return EngineError.OutOfMemory;
+                                break :blk mvcc_mod.serializeVersionedRow(
+                                    self.allocator,
+                                    hdr,
+                                    updated,
+                                ) catch return EngineError.OutOfMemory;
+                            } else serializeRow(self.allocator, updated) catch
+                                return EngineError.OutOfMemory;
                             defer self.allocator.free(new_data);
                             target_tree.delete(key) catch return EngineError.StorageError;
                             target_tree.insert(key, new_data) catch return EngineError.StorageError;
 
                             // Record undo after mutations succeed (issue #125 step 6/8)
-                            // upd_entry.value and new_data are still in scope (defers fire at end of block)
-                            self.recordUndo(merge.target, key, upd_entry.value, new_data) catch return EngineError.OutOfMemory;
+                            // upd_entry.value and new_data are still in scope (defers fire at end
+                            // of block)
+                            self.recordUndo(
+                                merge.target,
+                                key,
+                                upd_entry.value,
+                                new_data,
+                            ) catch return EngineError.OutOfMemory;
 
                             rows_affected += 1;
                         },
@@ -7968,16 +9479,24 @@ pub const Database = struct {
         return .{ .rows_affected = rows_affected, .message = "MERGE" };
     }
 
-    // ── COPY statement execution ──────────────────────────────────
+    // ── COPY statement execution ────────────────────
 
-    fn executeCopy(self: *Database, stmt: *const ast_mod.CopyStmt, alloc: Allocator) EngineError!QueryResult {
+    fn executeCopy(
+        self: *Database,
+        stmt: *const ast_mod.CopyStmt,
+        alloc: Allocator,
+    ) EngineError!QueryResult {
         return switch (stmt.direction) {
             .from => try self.executeCopyFrom(stmt, alloc),
             .to => try self.executeCopyTo(stmt),
         };
     }
 
-    fn executeCopyFrom(self: *Database, stmt: *const ast_mod.CopyStmt, _: Allocator) EngineError!QueryResult {
+    fn executeCopyFrom(
+        self: *Database,
+        stmt: *const ast_mod.CopyStmt,
+        _: Allocator,
+    ) EngineError!QueryResult {
         const table_name = switch (stmt.source) {
             .table => |n| n,
             .query => return EngineError.ExecutionError, // FROM requires table
@@ -7992,7 +9511,10 @@ pub const Database = struct {
         defer arena.deinit();
         const arena_alloc = arena.allocator();
 
-        const content = file.readToEndAlloc(arena_alloc, 100 * 1024 * 1024) catch return EngineError.ExecutionError;
+        const content = file.readToEndAlloc(
+            arena_alloc,
+            100 * 1024 * 1024,
+        ) catch return EngineError.ExecutionError;
 
         var lines = std.mem.splitScalar(u8, content, '\n');
         var row_count: u64 = 0;
@@ -8056,7 +9578,9 @@ pub const Database = struct {
             .query => |sel| blk: {
                 // Re-execute the select via execSQL with the statement
                 // We'll create a temporary AST and execute it
-                var arena: ?*AstArena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
+                var arena: ?*AstArena = self.allocator.create(
+                    AstArena,
+                ) catch return EngineError.OutOfMemory;
                 arena.?.* = AstArena.init(self.allocator);
 
                 const provider = self.schemaProvider();
@@ -8093,7 +9617,10 @@ pub const Database = struct {
         defer result.close(self.allocator);
 
         // Open/create output file
-        const file = std.fs.cwd().createFile(stmt.path, .{}) catch return EngineError.ExecutionError;
+        const file = std.fs.cwd().createFile(
+            stmt.path,
+            .{},
+        ) catch return EngineError.ExecutionError;
         defer file.close();
 
         // Use ArrayListUnmanaged to collect output
@@ -8180,9 +9707,13 @@ pub const Database = struct {
         return has_digit;
     }
 
-    // ── DDL execution ────────────────────────────────────────────────
+    // ── DDL execution ────────────────────────
 
-    fn executeCreateTable(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
+    fn executeCreateTable(
+        self: *Database,
+        arena: *AstArena,
+        plan: LogicalPlan,
+    ) EngineError!QueryResult {
         defer {
             arena.deinit();
             self.allocator.destroy(arena);
@@ -8197,7 +9728,11 @@ pub const Database = struct {
         return .{ .message = "OK" };
     }
 
-    fn executeDropTable(self: *Database, arena: *AstArena, plan: LogicalPlan) EngineError!QueryResult {
+    fn executeDropTable(
+        self: *Database,
+        arena: *AstArena,
+        plan: LogicalPlan,
+    ) EngineError!QueryResult {
         defer {
             arena.deinit();
             self.allocator.destroy(arena);
@@ -8238,9 +9773,17 @@ pub const Database = struct {
                             // Store the expression source text (if available)
                             // For now, we'll extract it from the parsed expression
                             if (default_val.* == .integer_literal) {
-                                default_expr = try std.fmt.allocPrint(self.allocator, "{d}", .{default_val.integer_literal});
+                                default_expr = try std.fmt.allocPrint(
+                                    self.allocator,
+                                    "{d}",
+                                    .{default_val.integer_literal},
+                                );
                             } else if (default_val.* == .string_literal) {
-                                default_expr = try std.fmt.allocPrint(self.allocator, "'{s}'", .{default_val.string_literal});
+                                default_expr = try std.fmt.allocPrint(
+                                    self.allocator,
+                                    "'{s}'",
+                                    .{default_val.string_literal},
+                                );
                             }
                         },
                         else => {},
@@ -8260,7 +9803,12 @@ pub const Database = struct {
                 try self.catalog.renameTable(stmt.table_name, new_name);
             },
             .alter_column => |ac| {
-                try self.catalog.alterColumn(stmt.table_name, ac.col_name, ac.action, ac.default_sql);
+                try self.catalog.alterColumn(
+                    stmt.table_name,
+                    ac.col_name,
+                    ac.action,
+                    ac.default_sql,
+                );
             },
         }
     }
@@ -8276,22 +9824,56 @@ pub const Database = struct {
         self.catalog.subquery_evaluator = &self.subquery_evaluator_vtable;
     }
 
-    fn sqEvalScalar(ptr: *anyopaque, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row) executor_mod.EvalError!executor_mod.Value {
+    fn sqEvalScalar(
+        ptr: *anyopaque,
+        allocator: Allocator,
+        stmt: *const ast_mod.SelectStmt,
+        outer_row: *const executor_mod.Row,
+    ) executor_mod.EvalError!executor_mod.Value {
         const self: *Database = @ptrCast(@alignCast(ptr));
-        return self.runSubqueryScalar(allocator, stmt, outer_row) catch return executor_mod.EvalError.UnsupportedExpression;
+        return self.runSubqueryScalar(
+            allocator,
+            stmt,
+            outer_row,
+        ) catch return executor_mod.EvalError.UnsupportedExpression;
     }
 
-    fn sqEvalExists(ptr: *anyopaque, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row) executor_mod.EvalError!bool {
+    fn sqEvalExists(
+        ptr: *anyopaque,
+        allocator: Allocator,
+        stmt: *const ast_mod.SelectStmt,
+        outer_row: *const executor_mod.Row,
+    ) executor_mod.EvalError!bool {
         const self: *Database = @ptrCast(@alignCast(ptr));
-        return self.runSubqueryExists(allocator, stmt, outer_row) catch return executor_mod.EvalError.UnsupportedExpression;
+        return self.runSubqueryExists(
+            allocator,
+            stmt,
+            outer_row,
+        ) catch return executor_mod.EvalError.UnsupportedExpression;
     }
 
-    fn sqEvalContains(ptr: *anyopaque, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row, needle: executor_mod.Value) executor_mod.EvalError!bool {
+    fn sqEvalContains(
+        ptr: *anyopaque,
+        allocator: Allocator,
+        stmt: *const ast_mod.SelectStmt,
+        outer_row: *const executor_mod.Row,
+        needle: executor_mod.Value,
+    ) executor_mod.EvalError!bool {
         const self: *Database = @ptrCast(@alignCast(ptr));
-        return self.runSubqueryContains(allocator, stmt, outer_row, needle) catch return executor_mod.EvalError.UnsupportedExpression;
+        return self.runSubqueryContains(
+            allocator,
+            stmt,
+            outer_row,
+            needle,
+        ) catch return executor_mod.EvalError.UnsupportedExpression;
     }
 
-    fn runSubqueryScalar(self: *Database, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row) !executor_mod.Value {
+    fn runSubqueryScalar(
+        self: *Database,
+        allocator: Allocator,
+        stmt: *const ast_mod.SelectStmt,
+        outer_row: *const executor_mod.Row,
+    ) !executor_mod.Value {
         var sq_arena = try self.allocator.create(AstArena);
         sq_arena.* = AstArena.init(self.allocator);
         defer {
@@ -8323,7 +9905,12 @@ pub const Database = struct {
         return .null_value;
     }
 
-    fn runSubqueryExists(self: *Database, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row) !bool {
+    fn runSubqueryExists(
+        self: *Database,
+        allocator: Allocator,
+        stmt: *const ast_mod.SelectStmt,
+        outer_row: *const executor_mod.Row,
+    ) !bool {
         _ = allocator;
         var sq_arena = try self.allocator.create(AstArena);
         sq_arena.* = AstArena.init(self.allocator);
@@ -8353,7 +9940,13 @@ pub const Database = struct {
         return false;
     }
 
-    fn runSubqueryContains(self: *Database, allocator: Allocator, stmt: *const ast_mod.SelectStmt, outer_row: *const executor_mod.Row, needle: executor_mod.Value) !bool {
+    fn runSubqueryContains(
+        self: *Database,
+        allocator: Allocator,
+        stmt: *const ast_mod.SelectStmt,
+        outer_row: *const executor_mod.Row,
+        needle: executor_mod.Value,
+    ) !bool {
         var sq_arena = try self.allocator.create(AstArena);
         sq_arena.* = AstArena.init(self.allocator);
         defer {
@@ -8407,7 +10000,9 @@ pub const Database = struct {
         self.catalog.current_xid = if (self.current_txn) |txn| txn.xid else mvcc_mod.INVALID_XID;
 
         // Parse first to determine statement type
-        var arena: ?*AstArena = self.allocator.create(AstArena) catch return EngineError.OutOfMemory;
+        var arena: ?*AstArena = self.allocator.create(
+            AstArena,
+        ) catch return EngineError.OutOfMemory;
         arena.?.* = AstArena.init(self.allocator);
         errdefer if (arena) |a| {
             a.deinit();
@@ -8417,7 +10012,11 @@ pub const Database = struct {
         var infra_alloc = std.heap.ArenaAllocator.init(self.allocator);
         defer infra_alloc.deinit();
 
-        var p = Parser.init(infra_alloc.allocator(), sql, arena.?) catch return EngineError.ParseError;
+        var p = Parser.init(
+            infra_alloc.allocator(),
+            sql,
+            arena.?,
+        ) catch return EngineError.ParseError;
         defer p.deinit();
 
         const maybe_stmt = p.parseStatement() catch return EngineError.ParseError;
@@ -8432,7 +10031,7 @@ pub const Database = struct {
                     self.allocator.destroy(arena.?);
                     arena = null; // Prevent errdefer from double-freeing
                     return switch (err) {
-                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        error.WriteOperationNotAllowed => EngineError.TransactionError,
                         else => EngineError.ExecutionError,
                     };
                 };
@@ -8440,7 +10039,8 @@ pub const Database = struct {
                 // Handle CREATE TABLE AS SELECT
                 if (ct.as_select != null) {
                     const result = self.executeCTAS(arena.?, &ct) catch |err| {
-                        arena = null; // executeCTAS already freed the arena; prevent errdefer double-free
+                        // executeCTAS already freed the arena; prevent errdefer double-free
+                        arena = null;
                         return switch (err) {
                             EngineError.TableAlreadyExists => EngineError.TableAlreadyExists,
                             EngineError.OutOfMemory => EngineError.OutOfMemory,
@@ -8471,7 +10071,7 @@ pub const Database = struct {
                     self.allocator.destroy(arena.?);
                     arena = null; // Prevent errdefer from double-freeing
                     return switch (err) {
-                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        error.WriteOperationNotAllowed => EngineError.TransactionError,
                         else => EngineError.ExecutionError,
                     };
                 };
@@ -8496,7 +10096,7 @@ pub const Database = struct {
                     self.allocator.destroy(arena.?);
                     arena = null;
                     return switch (err) {
-                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        error.WriteOperationNotAllowed => EngineError.TransactionError,
                         else => EngineError.ExecutionError,
                     };
                 };
@@ -8572,14 +10172,15 @@ pub const Database = struct {
                 self.allocator.destroy(arena.?);
                 switch (txn) {
                     .begin => |begin_stmt| {
-                        const isolation: mvcc_mod.IsolationLevel = if (begin_stmt.isolation_level) |iso|
-                            switch (iso) {
-                                .read_committed => .read_committed,
-                                .repeatable_read => .repeatable_read,
-                                .serializable => .serializable,
-                            }
-                        else
-                            .read_committed;
+                        const isolation: mvcc_mod.IsolationLevel =
+                            if (begin_stmt.isolation_level) |iso|
+                                switch (iso) {
+                                    .read_committed => .read_committed,
+                                    .repeatable_read => .repeatable_read,
+                                    .serializable => .serializable,
+                                }
+                            else
+                                .read_committed;
                         self.beginTransaction(isolation) catch {
                             return .{ .message = "ERROR: already in a transaction" };
                         };
@@ -8596,15 +10197,21 @@ pub const Database = struct {
                             // ROLLBACK TO SAVEPOINT name
                             self.rollbackToSavepoint(sp_name) catch |err| {
                                 return switch (err) {
-                                    EngineError.SavepointNotFound => .{ .message = "ERROR: savepoint not found" },
-                                    EngineError.NoActiveTransaction => .{ .message = "ERROR: no transaction in progress" },
+                                    EngineError.SavepointNotFound => .{
+                                        .message = "ERROR: savepoint not found",
+                                    },
+                                    EngineError.NoActiveTransaction => .{
+                                        .message = "ERROR: no transaction in progress",
+                                    },
                                     else => .{ .message = "ERROR: rollback to savepoint failed" },
                                 };
                             };
                             return .{ .message = "ROLLBACK" };
                         } else {
                             self.rollbackTransaction() catch {
-                                return .{ .message = "WARNING: there is no transaction in progress" };
+                                return .{
+                                    .message = "WARNING: there is no transaction in progress",
+                                };
                             };
                             return .{ .message = "ROLLBACK" };
                         }
@@ -8612,7 +10219,10 @@ pub const Database = struct {
                     .savepoint => |sp_name| {
                         self.createSavepoint(sp_name) catch |err| {
                             return switch (err) {
-                                EngineError.NoActiveTransaction => .{ .message = "ERROR: SAVEPOINT can only be used in transaction blocks" },
+                                EngineError.NoActiveTransaction => .{
+                                    .message = "ERROR: SAVEPOINT can only be used in " ++
+                                        "transaction blocks",
+                                },
                                 else => .{ .message = "ERROR: savepoint creation failed" },
                             };
                         };
@@ -8621,8 +10231,12 @@ pub const Database = struct {
                     .release => |sp_name| {
                         self.releaseSavepoint(sp_name) catch |err| {
                             return switch (err) {
-                                EngineError.SavepointNotFound => .{ .message = "ERROR: savepoint not found" },
-                                EngineError.NoActiveTransaction => .{ .message = "ERROR: no transaction in progress" },
+                                EngineError.SavepointNotFound => .{
+                                    .message = "ERROR: savepoint not found",
+                                },
+                                EngineError.NoActiveTransaction => .{
+                                    .message = "ERROR: no transaction in progress",
+                                },
                                 else => .{ .message = "ERROR: release savepoint failed" },
                             };
                         };
@@ -8731,7 +10345,13 @@ pub const Database = struct {
                 var mutable_cf = cf;
                 if (cf.body.len >= 2 and cf.body[0] == '\'' and cf.body[cf.body.len - 1] == '\'') {
                     const inner = cf.body[1 .. cf.body.len - 1];
-                    const unquoted = std.mem.replaceOwned(u8, infra_alloc.allocator(), inner, "''", "'") catch {
+                    const unquoted = std.mem.replaceOwned(
+                        u8,
+                        infra_alloc.allocator(),
+                        inner,
+                        "''",
+                        "'",
+                    ) catch {
                         return EngineError.OutOfMemory;
                     };
                     mutable_cf.body = unquoted;
@@ -8769,7 +10389,13 @@ pub const Database = struct {
                 var mutable_ct = ct;
                 if (ct.body.len >= 2 and ct.body[0] == '\'' and ct.body[ct.body.len - 1] == '\'') {
                     const inner = ct.body[1 .. ct.body.len - 1];
-                    const unquoted = std.mem.replaceOwned(u8, infra_alloc.allocator(), inner, "''", "'") catch {
+                    const unquoted = std.mem.replaceOwned(
+                        u8,
+                        infra_alloc.allocator(),
+                        inner,
+                        "''",
+                        "'",
+                    ) catch {
                         return EngineError.OutOfMemory;
                     };
                     mutable_ct.body = unquoted;
@@ -8947,7 +10573,7 @@ pub const Database = struct {
                     self.allocator.destroy(arena.?);
                     arena = null; // Prevent errdefer from double-freeing
                     return switch (err) {
-                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        error.WriteOperationNotAllowed => EngineError.TransactionError,
                         else => EngineError.ExecutionError,
                     };
                 };
@@ -8975,7 +10601,7 @@ pub const Database = struct {
                     self.allocator.destroy(arena.?);
                     arena = null; // Prevent errdefer from double-freeing
                     return switch (err) {
-                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        error.WriteOperationNotAllowed => EngineError.TransactionError,
                         else => EngineError.ExecutionError,
                     };
                 };
@@ -9002,7 +10628,8 @@ pub const Database = struct {
                     if (ci.if_not_exists) {
                         arena.?.deinit();
                         self.allocator.destroy(arena.?);
-                        const message = if (ci.concurrently) "CREATE INDEX CONCURRENTLY" else "CREATE INDEX";
+                        const message =
+                            if (ci.concurrently) "CREATE INDEX CONCURRENTLY" else "CREATE INDEX";
                         return .{ .message = message };
                     }
                     return EngineError.TableAlreadyExists;
@@ -9053,12 +10680,17 @@ pub const Database = struct {
                     // Initialize page based on index type
                     if (idx_type == .hash) {
                         // Hash index initialization is handled by HashIndex.init
-                        // Just write an empty FSM page as placeholder (HashIndex will initialize on first use)
+                        // Just write an empty FSM page as placeholder (HashIndex will initialize on
+                        // first use)
                         @memset(raw, 0);
                         raw[0] = 0x05; // FSM page type marker
                     } else if (idx_type == .gin and gin_opclass != .none) {
                         // Native GIN storage: initialize as GIN entry tree leaf
-                        gin_index_mod.initEntryTreeLeafPage(raw, self.catalog.pool.pager.page_size, idx_root_id);
+                        gin_index_mod.initEntryTreeLeafPage(
+                            raw,
+                            self.catalog.pool.pager.page_size,
+                            idx_root_id,
+                        );
                     } else {
                         // B+Tree index (default fallback for GIN on scalar columns)
                         btree_mod.initLeafPage(raw, self.catalog.pool.pager.page_size, idx_root_id);
@@ -9070,7 +10702,10 @@ pub const Database = struct {
                 }
 
                 // Build a new indexes array with the new index added
-                const new_indexes = self.allocator.alloc(catalog_mod.IndexInfo, table_info.indexes.len + 1) catch {
+                const new_indexes = self.allocator.alloc(
+                    catalog_mod.IndexInfo,
+                    table_info.indexes.len + 1,
+                ) catch {
                     return EngineError.OutOfMemory;
                 };
                 defer self.allocator.free(new_indexes);
@@ -9078,7 +10713,10 @@ pub const Database = struct {
                 @memcpy(new_indexes[0..table_info.indexes.len], table_info.indexes);
 
                 // Allocate and duplicate included_columns
-                const included_dup = self.allocator.alloc([]const u8, ci.included_columns.len) catch {
+                const included_dup = self.allocator.alloc(
+                    []const u8,
+                    ci.included_columns.len,
+                ) catch {
                     return EngineError.OutOfMemory;
                 };
                 for (ci.included_columns, 0..) |inc_col, i| {
@@ -9089,7 +10727,8 @@ pub const Database = struct {
 
                 // idx_type already determined above before page allocation
                 // Set initial state: BUILDING if concurrent, VALID otherwise
-                const initial_state: catalog_mod.IndexState = if (ci.concurrently) .building else .valid;
+                const initial_state: catalog_mod.IndexState =
+                    if (ci.concurrently) .building else .valid;
                 new_indexes[table_info.indexes.len] = .{
                     .index_name = self.allocator.dupe(u8, ci.name) catch {
                         return EngineError.OutOfMemory;
@@ -9125,7 +10764,8 @@ pub const Database = struct {
                 };
                 defer self.allocator.free(value);
 
-                // Free the allocated strings for the new index since they're now in the serialized buffer
+                // Free the allocated strings for the new index since they're now in the serialized
+                // buffer
                 self.allocator.free(new_indexes[table_info.indexes.len].index_name);
                 self.allocator.free(new_indexes[table_info.indexes.len].column_name);
                 for (included_dup) |incl| self.allocator.free(incl);
@@ -9154,7 +10794,10 @@ pub const Database = struct {
                     defer updated_table_info.deinit(self.allocator);
 
                     // Find the newly created index and transition it from BUILDING to VALID
-                    const new_indexes_updated = self.allocator.alloc(catalog_mod.IndexInfo, updated_table_info.indexes.len) catch {
+                    const new_indexes_updated = self.allocator.alloc(
+                        catalog_mod.IndexInfo,
+                        updated_table_info.indexes.len,
+                    ) catch {
                         arena.?.deinit();
                         self.allocator.destroy(arena.?);
                         return EngineError.OutOfMemory;
@@ -9202,7 +10845,8 @@ pub const Database = struct {
                 self.commitWal() catch {};
 
                 // Return appropriate message based on concurrently flag
-                const message = if (ci.concurrently) "CREATE INDEX CONCURRENTLY" else "CREATE INDEX";
+                const message =
+                    if (ci.concurrently) "CREATE INDEX CONCURRENTLY" else "CREATE INDEX";
                 return .{ .message = message };
             },
             .drop_index => |di| {
@@ -9212,13 +10856,14 @@ pub const Database = struct {
                     self.allocator.destroy(arena.?);
                     arena = null; // Prevent errdefer from double-freeing
                     return switch (err) {
-                        StandbyCoordinator.Error.WriteOperationNotAllowed => EngineError.TransactionError,
+                        error.WriteOperationNotAllowed => EngineError.TransactionError,
                         else => EngineError.ExecutionError,
                     };
                 };
 
                 // Find the table that contains the index by checking the column name
-                // For now, we search through all tables to find which one has an index on this column
+                // For now, we search through all tables to find which one has an index on this
+                // column
                 // This is a limitation of DROP INDEX not specifying the table name
                 var found_table: ?[]const u8 = null;
                 var owned_table_name: ?[]const u8 = null;
@@ -9374,7 +11019,10 @@ pub const Database = struct {
 
                 while (show_op.next() catch return EngineError.ExecutionError) |row_data| {
                     var row = row_data;
-                    const vals = self.allocator.alloc(Value, row.values.len) catch return EngineError.OutOfMemory;
+                    const vals = self.allocator.alloc(
+                        Value,
+                        row.values.len,
+                    ) catch return EngineError.OutOfMemory;
                     errdefer self.allocator.free(vals);
                     for (row.values, 0..) |v, i| {
                         vals[i] = v.dupe(self.allocator) catch return EngineError.OutOfMemory;
@@ -9384,21 +11032,31 @@ pub const Database = struct {
                 }
 
                 // Create column names: [name, value]
-                const col_names = self.allocator.alloc([]const u8, 2) catch return EngineError.OutOfMemory;
+                const col_names = self.allocator.alloc(
+                    []const u8,
+                    2,
+                ) catch return EngineError.OutOfMemory;
                 errdefer self.allocator.free(col_names);
                 col_names[0] = self.allocator.dupe(u8, "name") catch return EngineError.OutOfMemory;
                 errdefer self.allocator.free(col_names[0]);
-                col_names[1] = self.allocator.dupe(u8, "value") catch return EngineError.OutOfMemory;
+                col_names[1] = self.allocator.dupe(
+                    u8,
+                    "value",
+                ) catch return EngineError.OutOfMemory;
 
                 // Create MaterializedOp to hold the rows
-                const mat_op = self.allocator.create(MaterializedOp) catch return EngineError.OutOfMemory;
+                const mat_op = self.allocator.create(
+                    MaterializedOp,
+                ) catch return EngineError.OutOfMemory;
                 mat_op.* = MaterializedOp.init(
                     self.allocator,
                     col_names,
                     rows.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory,
                 );
 
-                const ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+                const ops = self.allocator.create(
+                    OperatorChain,
+                ) catch return EngineError.OutOfMemory;
                 ops.* = .{ .materialized = mat_op };
 
                 return .{
@@ -9434,20 +11092,33 @@ pub const Database = struct {
                 defer plan_text.deinit(arena.?.allocator());
 
                 const writer = plan_text.writer(arena.?.allocator());
-                planner_mod.formatPlan(optimized.root, writer, 0) catch return EngineError.ExecutionError;
+                planner_mod.formatPlan(
+                    optimized.root,
+                    writer,
+                    0,
+                ) catch return EngineError.ExecutionError;
 
                 // If ANALYZE flag is set, execute the query and show runtime stats
                 if (ex.analyze) {
-                    writer.writeAll("\n--- ANALYZE Runtime Statistics ---\n") catch return EngineError.ExecutionError;
+                    writer.writeAll(
+                        "\n--- ANALYZE Runtime Statistics ---\n",
+                    ) catch return EngineError.ExecutionError;
 
                     // Execute the query to collect actual runtime statistics
-                    const ops = self.allocator.create(OperatorChain) catch return EngineError.OutOfMemory;
+                    const ops = self.allocator.create(
+                        OperatorChain,
+                    ) catch return EngineError.OutOfMemory;
                     ops.* = .{};
                     defer ops.deinit(self.allocator);
 
                     const iter = self.buildIterator(optimized.root, ops) catch |err| {
-                        writer.print("(Execution failed: {})\n", .{err}) catch return EngineError.ExecutionError;
-                        const plan_str = plan_text.toOwnedSlice(arena.?.allocator()) catch return EngineError.OutOfMemory;
+                        writer.print(
+                            "(Execution failed: {})\n",
+                            .{err},
+                        ) catch return EngineError.ExecutionError;
+                        const plan_str = plan_text.toOwnedSlice(
+                            arena.?.allocator(),
+                        ) catch return EngineError.OutOfMemory;
                         return .{ .message = plan_str, ._arena = arena };
                     };
 
@@ -9457,9 +11128,16 @@ pub const Database = struct {
                     };
 
                     // Wrap the iterator with instrumentation
-                    var instrumented = executor_mod.InstrumentedIterator.init(iter, &root_stats) catch {
-                        writer.writeAll("(Failed to initialize instrumentation)\n") catch return EngineError.ExecutionError;
-                        const plan_str = plan_text.toOwnedSlice(arena.?.allocator()) catch return EngineError.OutOfMemory;
+                    var instrumented = executor_mod.InstrumentedIterator.init(
+                        iter,
+                        &root_stats,
+                    ) catch {
+                        writer.writeAll(
+                            "(Failed to initialize instrumentation)\n",
+                        ) catch return EngineError.ExecutionError;
+                        const plan_str = plan_text.toOwnedSlice(
+                            arena.?.allocator(),
+                        ) catch return EngineError.OutOfMemory;
                         return .{ .message = plan_str, ._arena = arena };
                     };
                     const inst_iter = instrumented.iterator();
@@ -9469,7 +11147,10 @@ pub const Database = struct {
                     var exec_error = false;
                     while (true) {
                         const maybe_row = inst_iter.next() catch |err| {
-                            writer.print("(Execution error: {})\n", .{err}) catch return EngineError.ExecutionError;
+                            writer.print(
+                                "(Execution error: {})\n",
+                                .{err},
+                            ) catch return EngineError.ExecutionError;
                             exec_error = true;
                             break;
                         };
@@ -9483,14 +11164,19 @@ pub const Database = struct {
                     }
 
                     // Display statistics
-                    writer.print("Total rows returned: {d}\n", .{total_rows}) catch return EngineError.ExecutionError;
+                    writer.print(
+                        "Total rows returned: {d}\n",
+                        .{total_rows},
+                    ) catch return EngineError.ExecutionError;
                     writer.print("{any}\n", .{root_stats}) catch return EngineError.ExecutionError;
 
                     inst_iter.close();
                 }
 
                 // Return plan text as a single-row result; owned by arena
-                const plan_str = plan_text.toOwnedSlice(arena.?.allocator()) catch return EngineError.OutOfMemory;
+                const plan_str = plan_text.toOwnedSlice(
+                    arena.?.allocator(),
+                ) catch return EngineError.OutOfMemory;
 
                 // Keep arena alive - will be freed in QueryResult.close()
                 return .{ .message = plan_str, ._arena = arena };
@@ -9533,7 +11219,7 @@ pub const Database = struct {
         return self.executePlan(owned_arena, optimized);
     }
 
-    // ── VACUUM ──────────────────────────────────────────────────────
+    // ── VACUUM ──────────────────────────
 
     fn executeVacuum(self: *Database, table_name: ?[]const u8) EngineError!QueryResult {
         // Cannot vacuum inside a transaction
@@ -9561,7 +11247,9 @@ pub const Database = struct {
             }
         } else {
             // Vacuum all tables
-            const tables = self.catalog.listTables(self.allocator) catch return EngineError.StorageError;
+            const tables = self.catalog.listTables(
+                self.allocator,
+            ) catch return EngineError.StorageError;
             defer {
                 for (tables) |t| self.allocator.free(t);
                 self.allocator.free(tables);
@@ -9597,7 +11285,7 @@ pub const Database = struct {
         return .{ .message = "VACUUM" };
     }
 
-    // ── ANALYZE ──────────────────────────────────────────────────────
+    // ── ANALYZE ──────────────────────────
 
     fn executeAnalyze(self: *Database, table_name: ?[]const u8) EngineError!QueryResult {
         // ANALYZE can run inside a transaction (read-only operation)
@@ -9607,14 +11295,17 @@ pub const Database = struct {
             try self.analyzeTable(name);
         } else {
             // Analyze all tables
-            const tables = self.catalog.listTables(self.allocator) catch return EngineError.StorageError;
+            const tables = self.catalog.listTables(
+                self.allocator,
+            ) catch return EngineError.StorageError;
             defer {
                 for (tables) |t| self.allocator.free(t);
                 self.allocator.free(tables);
             }
 
             for (tables) |tbl_name| {
-                self.analyzeTable(tbl_name) catch continue; // Skip errors, continue with other tables
+                // Skip errors, continue with other tables
+                self.analyzeTable(tbl_name) catch continue;
             }
         }
 
@@ -9628,7 +11319,8 @@ pub const Database = struct {
 
         // Scan the table to collect statistics
         var row_count: u64 = 0;
-        var column_values = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){}; // col_name -> value list
+        // col_name -> value list
+        var column_values = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
         defer {
             var it = column_values.iterator();
             while (it.next()) |entry| {
@@ -9659,7 +11351,10 @@ pub const Database = struct {
 
             // Deserialize row to collect column values (handle MVCC-versioned rows)
             const values = if (mvcc_mod.isVersionedRow(entry.value)) blk: {
-                const result = mvcc_mod.deserializeVersionedRow(self.allocator, entry.value) catch continue;
+                const result = mvcc_mod.deserializeVersionedRow(
+                    self.allocator,
+                    entry.value,
+                ) catch continue;
                 // Note: We only need the values, header is discarded
                 break :blk result.values;
             } else executor_mod.deserializeRow(self.allocator, entry.value) catch continue;
@@ -9673,12 +11368,17 @@ pub const Database = struct {
                 if (i < values.len) {
                     const val = values[i];
                     // Serialize the value to bytes for comparison
-                    const serialized = self.serializeValueForStats(val) catch return EngineError.OutOfMemory;
+                    const serialized = self.serializeValueForStats(
+                        val,
+                    ) catch return EngineError.OutOfMemory;
                     var list = column_values.getPtr(col.name).?;
                     list.append(self.allocator, serialized) catch return EngineError.OutOfMemory;
                 } else {
                     // Column not present in this row (schema evolution)
-                    const null_bytes = self.allocator.dupe(u8, &[_]u8{0x00}) catch return EngineError.OutOfMemory;
+                    const null_bytes = self.allocator.dupe(
+                        u8,
+                        &[_]u8{0x00},
+                    ) catch return EngineError.OutOfMemory;
                     var list = column_values.getPtr(col.name).?;
                     list.append(self.allocator, null_bytes) catch return EngineError.OutOfMemory;
                 }
@@ -9687,7 +11387,10 @@ pub const Database = struct {
 
         // Create and store table stats
         const table_stats = stats_mod.TableStats.init(row_count);
-        self.catalog.createTableStats(table_name, table_stats) catch return EngineError.StorageError;
+        self.catalog.createTableStats(
+            table_name,
+            table_stats,
+        ) catch return EngineError.StorageError;
 
         // Create and store column stats
         for (table_info.columns) |col| {
@@ -9719,17 +11422,23 @@ pub const Database = struct {
                 .histogram_buckets = histogram_buckets,
             };
 
-            self.catalog.createColumnStats(table_name, col.name, col_stats) catch return EngineError.StorageError;
+            self.catalog.createColumnStats(
+                table_name,
+                col.name,
+                col_stats,
+            ) catch return EngineError.StorageError;
         }
     }
 
-    // ── REINDEX ──────────────────────────────────────────────────────
+    // ── REINDEX ──────────────────────────
 
     fn executeReindex(self: *Database, stmt: ast_mod.ReindexStmt) EngineError!QueryResult {
         switch (stmt) {
             .index => |index_name| {
                 // Find which table contains this index
-                const tables = self.catalog.listTables(self.allocator) catch return EngineError.StorageError;
+                const tables = self.catalog.listTables(
+                    self.allocator,
+                ) catch return EngineError.StorageError;
                 defer {
                     for (tables) |t| self.allocator.free(t);
                     self.allocator.free(tables);
@@ -9765,7 +11474,9 @@ pub const Database = struct {
             },
             .table => |table_name| {
                 // Get table info
-                var table_info = self.catalog.getTable(table_name) catch return EngineError.TableNotFound;
+                var table_info = self.catalog.getTable(
+                    table_name,
+                ) catch return EngineError.TableNotFound;
                 defer table_info.deinit(self.allocator);
 
                 // Rebuild all indexes on the table
@@ -9778,7 +11489,9 @@ pub const Database = struct {
             },
             .database => {
                 // Rebuild all indexes in the database
-                const tables = self.catalog.listTables(self.allocator) catch return EngineError.StorageError;
+                const tables = self.catalog.listTables(
+                    self.allocator,
+                ) catch return EngineError.StorageError;
                 defer {
                     for (tables) |t| self.allocator.free(t);
                     self.allocator.free(tables);
@@ -9800,17 +11513,23 @@ pub const Database = struct {
     }
 
     /// Rebuild a single index from scratch.
-    fn rebuildIndex(self: *Database, table_name: []const u8, index_info: catalog_mod.IndexInfo) EngineError!void {
+    fn rebuildIndex(
+        self: *Database,
+        table_name: []const u8,
+        index_info: catalog_mod.IndexInfo,
+    ) EngineError!void {
         // Get table info
         var table_info = self.catalog.getTable(table_name) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
 
         // Clear the old index structure (allocate a new root page)
-        const new_root_page_id = self.catalog.pool.pager.allocPage() catch return EngineError.StorageError;
+        const new_root_page_id =
+            self.catalog.pool.pager.allocPage() catch return EngineError.StorageError;
 
         // Initialize the new root page based on index type
         {
-            const raw = self.catalog.pool.pager.allocPageBuf() catch return EngineError.StorageError;
+            const raw =
+                self.catalog.pool.pager.allocPageBuf() catch return EngineError.StorageError;
             defer self.catalog.pool.pager.freePageBuf(raw);
 
             if (index_info.index_type == .hash) {
@@ -9822,7 +11541,10 @@ pub const Database = struct {
                 btree_mod.initLeafPage(raw, self.catalog.pool.pager.page_size, new_root_page_id);
             }
 
-            self.catalog.pool.pager.writePage(new_root_page_id, raw) catch return EngineError.StorageError;
+            self.catalog.pool.pager.writePage(
+                new_root_page_id,
+                raw,
+            ) catch return EngineError.StorageError;
         }
 
         // Scan the table and rebuild the index
@@ -9877,7 +11599,13 @@ pub const Database = struct {
     }
 
     /// Update index properties (root page and state) in a single catalog update.
-    fn updateIndexProperties(self: *Database, table_name: []const u8, index_name: []const u8, new_root_page_id: u32, new_state: catalog_mod.IndexState) EngineError!void {
+    fn updateIndexProperties(
+        self: *Database,
+        table_name: []const u8,
+        index_name: []const u8,
+        new_root_page_id: u32,
+        new_state: catalog_mod.IndexState,
+    ) EngineError!void {
         // Get current table info
         var table_info = self.catalog.getTable(table_name) catch return EngineError.TableNotFound;
         defer table_info.deinit(self.allocator);
@@ -9984,8 +11712,12 @@ pub const Database = struct {
     }
 
     /// Build an equi-depth histogram from column values.
-    /// Filters out NULL values, sorts remaining values, and creates ~10 buckets with equal row counts.
-    fn buildHistogram(self: *Database, values: []const []const u8) EngineError![]stats_mod.HistogramBucket {
+    /// Filters out NULL values, sorts remaining values, and creates ~10 buckets with equal row
+    /// counts.
+    fn buildHistogram(
+        self: *Database,
+        values: []const []const u8,
+    ) EngineError![]stats_mod.HistogramBucket {
         // Filter out NULL values (marked with 0x00 tag)
         var non_null = std.ArrayListUnmanaged([]const u8){};
         defer non_null.deinit(self.allocator);
@@ -9998,7 +11730,10 @@ pub const Database = struct {
 
         // Empty column yields empty histogram
         if (non_null.items.len == 0) {
-            return self.allocator.alloc(stats_mod.HistogramBucket, 0) catch return EngineError.OutOfMemory;
+            return self.allocator.alloc(
+                stats_mod.HistogramBucket,
+                0,
+            ) catch return EngineError.OutOfMemory;
         }
 
         // Sort non-NULL values lexicographically
@@ -10030,9 +11765,15 @@ pub const Database = struct {
                 buckets.deinit(self.allocator);
             }
 
-            const lower = self.allocator.dupe(u8, non_null.items[0]) catch return EngineError.OutOfMemory;
+            const lower = self.allocator.dupe(
+                u8,
+                non_null.items[0],
+            ) catch return EngineError.OutOfMemory;
             errdefer self.allocator.free(lower);
-            const upper = self.allocator.dupe(u8, non_null.items[0]) catch return EngineError.OutOfMemory;
+            const upper = self.allocator.dupe(
+                u8,
+                non_null.items[0],
+            ) catch return EngineError.OutOfMemory;
             errdefer self.allocator.free(upper);
 
             try buckets.append(self.allocator, .{
@@ -10054,18 +11795,27 @@ pub const Database = struct {
             buckets.deinit(self.allocator);
         }
 
-        const rows_per_bucket = (non_null.items.len + target_bucket_count - 1) / target_bucket_count;
+        const rows_per_bucket =
+            (non_null.items.len + target_bucket_count - 1) / target_bucket_count;
         var bucket_idx: usize = 0;
 
-        while (bucket_idx < target_bucket_count and bucket_idx * rows_per_bucket < non_null.items.len) {
+        while (bucket_idx < target_bucket_count and
+            bucket_idx * rows_per_bucket < non_null.items.len)
+        {
             const start_idx = bucket_idx * rows_per_bucket;
             const end_idx = @min((bucket_idx + 1) * rows_per_bucket - 1, non_null.items.len - 1);
 
             if (start_idx > non_null.items.len - 1) break;
 
-            const lower = self.allocator.dupe(u8, non_null.items[start_idx]) catch return EngineError.OutOfMemory;
+            const lower = self.allocator.dupe(
+                u8,
+                non_null.items[start_idx],
+            ) catch return EngineError.OutOfMemory;
             errdefer self.allocator.free(lower);
-            const upper = self.allocator.dupe(u8, non_null.items[end_idx]) catch return EngineError.OutOfMemory;
+            const upper = self.allocator.dupe(
+                u8,
+                non_null.items[end_idx],
+            ) catch return EngineError.OutOfMemory;
             errdefer self.allocator.free(upper);
 
             const bucket_count = end_idx - start_idx + 1;
@@ -10082,13 +11832,15 @@ pub const Database = struct {
         return try buckets.toOwnedSlice(self.allocator);
     }
 
-    /// Calculate Spearman's rank correlation coefficient between logical (sorted) order and physical (storage) order.
+    /// Calculate Spearman's rank correlation coefficient between logical (sorted) order and
+    /// physical (storage) order.
     /// Returns a value from -1.0 to 1.0:
     ///   - Values close to +1.0: Column values are ordered in storage (index scans efficient)
     ///   - Values close to -1.0: Column values are reverse-ordered in storage
     ///   - Values close to 0.0: Column values are randomly ordered (no correlation)
     ///
-    /// This statistic helps the optimizer decide whether an index scan or sequential scan is more efficient.
+    /// This statistic helps the optimizer decide whether an index scan or sequential scan is more
+    /// efficient.
     fn calculateCorrelation(self: *Database, values: []const []const u8) EngineError!f64 {
         // Filter out NULL values
         var non_null = std.ArrayListUnmanaged([]const u8){};
@@ -10113,7 +11865,10 @@ pub const Database = struct {
         defer pairs.deinit(self.allocator);
 
         for (non_null.items, 0..) |val, pos| {
-            pairs.append(self.allocator, .{ .value = val, .physical_pos = pos }) catch return EngineError.OutOfMemory;
+            pairs.append(
+                self.allocator,
+                .{ .value = val, .physical_pos = pos },
+            ) catch return EngineError.OutOfMemory;
         }
 
         // Sort by value (logical order)
@@ -10132,7 +11887,9 @@ pub const Database = struct {
         while (i < pairs.items.len) {
             // Find extent of tie group
             var j: usize = i + 1;
-            while (j < pairs.items.len and std.mem.eql(u8, pairs.items[i].value, pairs.items[j].value)) {
+            while (j < pairs.items.len and
+                std.mem.eql(u8, pairs.items[i].value, pairs.items[j].value))
+            {
                 j += 1;
             }
 
@@ -10154,11 +11911,18 @@ pub const Database = struct {
         var phys_sorted = std.ArrayListUnmanaged(struct { physical_pos: usize, idx: usize }){};
         defer phys_sorted.deinit(self.allocator);
         for (pairs.items, 0..) |pair, idx| {
-            phys_sorted.append(self.allocator, .{ .physical_pos = pair.physical_pos, .idx = idx }) catch return EngineError.OutOfMemory;
+            phys_sorted.append(
+                self.allocator,
+                .{ .physical_pos = pair.physical_pos, .idx = idx },
+            ) catch return EngineError.OutOfMemory;
         }
 
         std.mem.sort(@TypeOf(phys_sorted.items[0]), phys_sorted.items, {}, struct {
-            fn compare(_: void, a: @TypeOf(phys_sorted.items[0]), b: @TypeOf(phys_sorted.items[0])) bool {
+            fn compare(
+                _: void,
+                a: @TypeOf(phys_sorted.items[0]),
+                b: @TypeOf(phys_sorted.items[0]),
+            ) bool {
                 return a.physical_pos < b.physical_pos;
             }
         }.compare);
@@ -10166,7 +11930,9 @@ pub const Database = struct {
         i = 0;
         while (i < phys_sorted.items.len) {
             var j: usize = i + 1;
-            while (j < phys_sorted.items.len and phys_sorted.items[i].physical_pos == phys_sorted.items[j].physical_pos) {
+            while (j < phys_sorted.items.len and
+                phys_sorted.items[i].physical_pos == phys_sorted.items[j].physical_pos)
+            {
                 j += 1;
             }
 
@@ -10192,7 +11958,7 @@ pub const Database = struct {
         return correlation;
     }
 
-    // ── Auto-Vacuum ──────────────────────────────────────────────────
+    // ── Auto-Vacuum ────────────────────────
 
     /// Check if any tables need vacuuming and run vacuum on those that do.
     /// Called automatically after transaction commits and auto-commit DML.
@@ -10234,7 +12000,7 @@ pub const Database = struct {
         self.commitWal() catch {};
     }
 
-    // ── SchemaProvider adapter ────────────────────────────────────────
+    // ── SchemaProvider adapter ─────────────────────
 
     pub fn schemaProvider(self: *Database) SchemaProvider {
         return .{
@@ -10326,7 +12092,7 @@ pub const Database = struct {
         return self.catalog.viewExists(name) catch false;
     }
 
-    // ── Updatable View Support ──────────────────────────────────────
+    // ── Updatable View Support ─────────────────────
 
     /// Info extracted from an updatable view definition.
     const UpdatableViewInfo = struct {
@@ -10400,7 +12166,8 @@ pub const Database = struct {
             .subquery => return null,
             .table_function => return null, // Table functions not supported in updatable views
             .values_table => return null, // VALUES tables not supported in updatable views
-            .match_recognize => return null, // MATCH_RECOGNIZE not supported in updatable views (Phase 1 doesn't support this)
+            // MATCH_RECOGNIZE not supported in updatable views (Phase 1 doesn't support this)
+            .match_recognize => return null,
         };
 
         // Verify the base table actually exists (not another view — for simplicity)
@@ -10428,7 +12195,15 @@ pub const Database = struct {
     fn containsAggregateFunction(expr: *const ast_mod.Expr) bool {
         return switch (expr.*) {
             .function_call => |fc| {
-                const agg_names = [_][]const u8{ "count", "sum", "avg", "min", "max", "count_star", "group_concat" };
+                const agg_names = [_][]const u8{
+                    "count",
+                    "sum",
+                    "avg",
+                    "min",
+                    "max",
+                    "count_star",
+                    "group_concat",
+                };
                 for (agg_names) |name| {
                     if (std.ascii.eqlIgnoreCase(fc.name, name)) return true;
                 }
@@ -10437,10 +12212,14 @@ pub const Database = struct {
                 }
                 return false;
             },
-            .binary_op => |bo| containsAggregateFunction(bo.left) or containsAggregateFunction(bo.right),
+            .binary_op => |bo| containsAggregateFunction(bo.left) or containsAggregateFunction(
+                bo.right,
+            ),
             .unary_op => |uo| containsAggregateFunction(uo.operand),
             .paren => |p| containsAggregateFunction(p),
-            .between => |b| containsAggregateFunction(b.expr) or containsAggregateFunction(b.low) or containsAggregateFunction(b.high),
+            .between => |b| containsAggregateFunction(
+                b.expr,
+            ) or containsAggregateFunction(b.low) or containsAggregateFunction(b.high),
             .in_list => |il| blk: {
                 if (containsAggregateFunction(il.expr)) break :blk true;
                 for (il.list) |item| {
@@ -10455,7 +12234,8 @@ pub const Database = struct {
                     if (containsAggregateFunction(op)) break :blk true;
                 }
                 for (ce.when_clauses) |wc| {
-                    if (containsAggregateFunction(wc.condition) or containsAggregateFunction(wc.result)) break :blk true;
+                    if (containsAggregateFunction(wc.condition) or
+                        containsAggregateFunction(wc.result)) break :blk true;
                 }
                 if (ce.else_expr) |ee| {
                     if (containsAggregateFunction(ee)) break :blk true;
@@ -10474,7 +12254,11 @@ pub const Database = struct {
         defer gen_arena.deinit();
         var infra = std.heap.ArenaAllocator.init(self.allocator);
         defer infra.deinit();
-        var p = parser_mod.Parser.init(infra.allocator(), expr_sql, &gen_arena) catch return .null_value;
+        var p = parser_mod.Parser.init(
+            infra.allocator(),
+            expr_sql,
+            &gen_arena,
+        ) catch return .null_value;
         defer p.deinit();
         const expr_ptr = p.parseExpr(0) catch return .null_value;
         return evalExpr(self.allocator, expr_ptr, row, null) catch .null_value;
@@ -10483,8 +12267,17 @@ pub const Database = struct {
     /// Evaluate all column-level CHECK constraints for a row.
     /// Returns CheckConstraintViolation if any constraint fails.
     /// NULL values pass CHECK (SQL standard behavior).
-    fn evalCheckConstraints(self: *Database, table_info: *const TableInfo, col_names: []const []const u8, values: []const Value) EngineError!void {
-        const row = Row{ .columns = col_names, .values = @constCast(values), .allocator = self.allocator };
+    fn evalCheckConstraints(
+        self: *Database,
+        table_info: *const TableInfo,
+        col_names: []const []const u8,
+        values: []const Value,
+    ) EngineError!void {
+        const row = Row{
+            .columns = col_names,
+            .values = @constCast(values),
+            .allocator = self.allocator,
+        };
         for (table_info.columns) |col| {
             if (!col.flags.has_check or col.check_expr.len == 0) continue;
             // Find column value — NULL passes CHECK unconditionally
@@ -10497,7 +12290,11 @@ pub const Database = struct {
             defer check_arena.deinit();
             var infra = std.heap.ArenaAllocator.init(self.allocator);
             defer infra.deinit();
-            var p = parser_mod.Parser.init(infra.allocator(), col.check_expr, &check_arena) catch continue;
+            var p = parser_mod.Parser.init(
+                infra.allocator(),
+                col.check_expr,
+                &check_arena,
+            ) catch continue;
             defer p.deinit();
             const expr_ptr = p.parseExpr(0) catch continue;
             const result = evalExpr(self.allocator, expr_ptr, &row, null) catch continue;
@@ -10512,7 +12309,12 @@ pub const Database = struct {
         }
     }
 
-    fn checkViewCondition(self: *Database, where_expr: *const ast_mod.Expr, col_names: []const []const u8, values: []Value) bool {
+    fn checkViewCondition(
+        self: *Database,
+        where_expr: *const ast_mod.Expr,
+        col_names: []const []const u8,
+        values: []Value,
+    ) bool {
         const row = Row{
             .columns = col_names,
             .values = values,
@@ -10528,7 +12330,7 @@ pub const Database = struct {
     }
 };
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────
 
 const testing = std.testing;
 
@@ -10580,7 +12382,9 @@ test "CREATE TABLE via execSQL" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var result = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT)");
+    var result = try db.execSQL(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT)",
+    );
     defer result.close(testing.allocator);
 
     try testing.expectEqualStrings("CREATE TABLE", result.message);
@@ -10793,7 +12597,10 @@ test "ORDER BY on non-selected column" {
 
     var r1 = try db.execSQL("CREATE TABLE items (name TEXT, priority INTEGER, category TEXT)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO items VALUES ('c_low', 3, 'tools'), ('a_high', 1, 'food'), ('b_mid', 2, 'food')");
+    var r2 = try db.execSQL(
+        "INSERT INTO items VALUES ('c_low', 3, 'tools'), ('a_high', 1, 'food'), " ++
+            "('b_mid', 2, 'food')",
+    );
     defer r2.close(testing.allocator);
 
     // ORDER BY priority (not in SELECT list)
@@ -11560,7 +13367,9 @@ test "INNER JOIN two tables" {
     ins5.close(testing.allocator);
 
     // Join query
-    var result = try db.execSQL("SELECT u.name, o.product FROM users u JOIN orders o ON u.id = o.user_id");
+    var result = try db.execSQL(
+        "SELECT u.name, o.product FROM users u JOIN orders o ON u.id = o.user_id",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -11598,7 +13407,9 @@ test "LEFT JOIN with unmatched rows" {
     ins3.close(testing.allocator);
 
     // LEFT JOIN — Marketing has no employees, should still appear
-    var result = try db.execSQL("SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON d.id = e.dept_id");
+    var result = try db.execSQL(
+        "SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON d.id = e.dept_id",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -12018,7 +13829,11 @@ test "large INSERT batch" {
     var i: usize = 0;
     while (i < 100) : (i += 1) {
         var buf: [128]u8 = undefined;
-        const sql = std.fmt.bufPrint(&buf, "INSERT INTO big VALUES ({d}, 'row_{d}')", .{ i, i }) catch unreachable;
+        const sql = std.fmt.bufPrint(
+            &buf,
+            "INSERT INTO big VALUES ({d}, 'row_{d}')",
+            .{ i, i },
+        ) catch unreachable;
         var ins = try db.execSQL(sql);
         ins.close(testing.allocator);
     }
@@ -12187,7 +14002,7 @@ test "transaction statements return OK" {
     try testing.expectEqualStrings("COMMIT", r2.message);
 }
 
-// ── Index Selection Tests ────────────────────────────────────────────
+// ── Index Selection Tests ──────────────────────
 
 test "index scan: WHERE on PRIMARY KEY integer column" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -12281,13 +14096,19 @@ test "index scan: multiple inserts then PK lookup" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r0 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);");
+    var r0 = try db.execSQL(
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);",
+    );
     r0.close(testing.allocator);
 
     // Insert 20 rows
     var ins_idx: usize = 0;
     while (ins_idx < 20) : (ins_idx += 1) {
-        const sql = try std.fmt.allocPrint(testing.allocator, "INSERT INTO products (id, name, price) VALUES ({d}, 'product_{d}', {d});", .{ ins_idx + 1, ins_idx + 1, (ins_idx + 1) * 10 });
+        const sql = try std.fmt.allocPrint(
+            testing.allocator,
+            "INSERT INTO products (id, name, price) VALUES ({d}, 'product_{d}', {d});",
+            .{ ins_idx + 1, ins_idx + 1, (ins_idx + 1) * 10 },
+        );
         defer testing.allocator.free(sql);
         var r = try db.execSQL(sql);
         r.close(testing.allocator);
@@ -12547,7 +14368,9 @@ test "extractEqualityPredicate: returns null for non-equality" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const left = ast_mod.Expr{ .column_ref = .{ .name = "id" } };
     const right = ast_mod.Expr{ .integer_literal = 5 };
-    const expr = ast_mod.Expr{ .binary_op = .{ .op = .greater_than, .left = &left, .right = &right } };
+    const expr = ast_mod.Expr{
+        .binary_op = .{ .op = .greater_than, .left = &left, .right = &right },
+    };
     const result = extractEqualityPredicate(&expr);
     try testing.expect(result == null);
 }
@@ -12579,14 +14402,24 @@ test "valueToIndexKey: integer ordering" {
 test "catalog index serialization roundtrip" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const columns = [_]catalog_mod.ColumnInfo{
-        .{ .name = "id", .column_type = .integer, .flags = .{ .primary_key = true, .not_null = true } },
+        .{
+            .name = "id",
+            .column_type = .integer,
+            .flags = .{ .primary_key = true, .not_null = true },
+        },
         .{ .name = "name", .column_type = .text, .flags = .{ .not_null = true } },
     };
     const indexes = [_]catalog_mod.IndexInfo{
         .{ .column_name = "id", .column_index = 0, .root_page_id = 42 },
     };
 
-    const data = try catalog_mod.serializeTableFull(testing.allocator, &columns, &.{}, &indexes, 10);
+    const data = try catalog_mod.serializeTableFull(
+        testing.allocator,
+        &columns,
+        &.{},
+        &indexes,
+        10,
+    );
     defer testing.allocator.free(data);
 
     var info = try catalog_mod.deserializeTable(testing.allocator, "test", data);
@@ -12618,7 +14451,7 @@ test "catalog index backward compatibility (no indexes)" {
     try testing.expectEqual(@as(usize, 0), info.indexes.len);
 }
 
-// ── WAL Mode Integration Tests ─────────────────────────────────────────
+// ── WAL Mode Integration Tests ─────────────────────
 
 test "WAL mode: open and close" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -12632,7 +14465,11 @@ test "WAL mode: open and close" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_open.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_open.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_eng_wal_open.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
@@ -12652,7 +14489,11 @@ test "WAL mode: CREATE TABLE and INSERT" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_insert.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_insert.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_eng_wal_insert.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
@@ -12693,7 +14534,11 @@ test "WAL mode: data persistence across close and reopen" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_persist.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_persist.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_eng_wal_persist.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     // Session 1: create table and insert data
@@ -12737,7 +14582,11 @@ test "WAL mode: UPDATE and DELETE" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_upd_del.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_upd_del.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_eng_wal_upd_del.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
@@ -12786,7 +14635,11 @@ test "WAL mode: aggregates" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_agg.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_agg.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_eng_wal_agg.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
@@ -12828,7 +14681,11 @@ test "WAL mode: multiple tables" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_multi.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_multi.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_eng_wal_multi.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
@@ -12880,7 +14737,11 @@ test "WAL mode: DROP TABLE" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_drop.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_drop.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_eng_wal_drop.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
@@ -12910,7 +14771,11 @@ test "WAL mode: large batch insert" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_wal_batch.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_eng_wal_batch.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_eng_wal_batch.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
@@ -12923,7 +14788,11 @@ test "WAL mode: large batch insert" {
     var idx: usize = 0;
     while (idx < 50) : (idx += 1) {
         var buf: [128]u8 = undefined;
-        const sql = std.fmt.bufPrint(&buf, "INSERT INTO nums (id, val) VALUES ({d}, {d})", .{ idx + 1, (idx + 1) * 10 }) catch unreachable;
+        const sql = std.fmt.bufPrint(
+            &buf,
+            "INSERT INTO nums (id, val) VALUES ({d}, {d})",
+            .{ idx + 1, (idx + 1) * 10 },
+        ) catch unreachable;
         var r = try db.execSQL(sql);
         r.close(testing.allocator);
     }
@@ -12937,7 +14806,7 @@ test "WAL mode: large batch insert" {
     }
 }
 
-// ── Error Handling Tests ──────────────────────────────────────────────
+// ── Error Handling Tests ───────────────────────
 
 test "error: parse invalid SQL" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -13008,7 +14877,10 @@ test "error: INSERT into non-existent table" {
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
-    try testing.expectError(EngineError.AnalysisError, db.execSQL("INSERT INTO nonexistent (id) VALUES (1)"));
+    try testing.expectError(
+        EngineError.AnalysisError,
+        db.execSQL("INSERT INTO nonexistent (id) VALUES (1)"),
+    );
 }
 
 test "error: UPDATE non-existent table" {
@@ -13062,7 +14934,10 @@ test "error: CREATE TABLE that already exists" {
     var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY)");
     r1.close(testing.allocator);
 
-    try testing.expectError(EngineError.TableAlreadyExists, db.execSQL("CREATE TABLE users (id INTEGER)"));
+    try testing.expectError(
+        EngineError.TableAlreadyExists,
+        db.execSQL("CREATE TABLE users (id INTEGER)"),
+    );
 }
 
 test "error: DROP TABLE that does not exist" {
@@ -13139,7 +15014,10 @@ test "error: INSERT column count mismatch" {
     r1.close(testing.allocator);
 
     // Too many values
-    try testing.expectError(EngineError.AnalysisError, db.execSQL("INSERT INTO items (id) VALUES (1, 'extra')"));
+    try testing.expectError(
+        EngineError.AnalysisError,
+        db.execSQL("INSERT INTO items (id) VALUES (1, 'extra')"),
+    );
 }
 
 test "successive exec calls on same database" {
@@ -13247,7 +15125,7 @@ test "error: exec after error recovers" {
     }
 }
 
-// ── MVCC Integration Tests ──────────────────────────────────────────
+// ── MVCC Integration Tests ──────────────────────
 
 test "MVCC: BEGIN starts a transaction" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -14376,7 +16254,7 @@ test "MVCC: rollbackTransaction error when no active transaction" {
     try testing.expectError(EngineError.NoActiveTransaction, db.rollbackTransaction());
 }
 
-// ── Lock Manager Integration Tests ────────────────────────────────────
+// ── Lock Manager Integration Tests ───────────────────
 
 test "Lock: INSERT acquires row locks in transaction" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -14938,7 +16816,9 @@ test "MVCC: ROLLBACK undoes DELETE — row returns" {
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO items (id, name) VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry')");
+        var r = try db.exec(
+            "INSERT INTO items (id, name) VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry')",
+        );
         r.close(testing.allocator);
         try testing.expectEqual(@as(u64, 3), r.rows_affected);
     }
@@ -15019,7 +16899,11 @@ test "WAL mode: transaction rollback preserves committed data" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_wal_txn_rollback.db", .{dir_path});
 
     var wal_path_buf: [512]u8 = undefined;
-    const wal_path = try std.fmt.bufPrint(&wal_path_buf, "{s}/test_wal_txn_rollback.db-wal", .{dir_path});
+    const wal_path = try std.fmt.bufPrint(
+        &wal_path_buf,
+        "{s}/test_wal_txn_rollback.db-wal",
+        .{dir_path},
+    );
     defer std.fs.cwd().deleteFile(wal_path) catch {};
 
     var db = try Database.open(testing.allocator, path, .{ .wal_mode = true });
@@ -15192,7 +17076,7 @@ test "MVCC: INSERT-UPDATE-DELETE in single transaction" {
     }
 }
 
-// ── VACUUM Integration Tests ──────────────────────────────────────────
+// ── VACUUM Integration Tests ─────────────────────
 
 test "VACUUM: basic VACUUM command" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -15422,7 +17306,7 @@ test "VACUUM: freezes old committed tuples" {
     }
 }
 
-// ── Savepoint Tests ─────────────────────────────────────────────────
+// ── Savepoint Tests ────────────────────────
 
 test "SAVEPOINT: basic savepoint creation via SQL" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -15547,7 +17431,10 @@ test "SAVEPOINT: error outside transaction" {
     {
         var r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
-        try testing.expectEqualStrings("ERROR: SAVEPOINT can only be used in transaction blocks", r.message);
+        try testing.expectEqualStrings(
+            "ERROR: SAVEPOINT can only be used in transaction blocks",
+            r.message,
+        );
     }
 }
 
@@ -15738,7 +17625,11 @@ test "SAVEPOINT: transaction commit cleans up savepoints" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_commit_cleanup.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_savepoint_commit_cleanup.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -15777,7 +17668,11 @@ test "SAVEPOINT: transaction rollback cleans up savepoints" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_rollback_cleanup.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_savepoint_rollback_cleanup.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16064,7 +17959,11 @@ test "SAVEPOINT: create and release within transaction" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_savepoint_create_release.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_savepoint_create_release.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16138,7 +18037,10 @@ test "SAVEPOINT: outside transaction returns error" {
     {
         var r = try db.exec("SAVEPOINT s1");
         r.close(testing.allocator);
-        try testing.expectEqualStrings("ERROR: SAVEPOINT can only be used in transaction blocks", r.message);
+        try testing.expectEqualStrings(
+            "ERROR: SAVEPOINT can only be used in transaction blocks",
+            r.message,
+        );
     }
 }
 
@@ -16237,7 +18139,11 @@ test "undo log: Savepoint.undo_len captures the watermark, not the current lengt
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_watermark_capture.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_undo_log_watermark_capture.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16435,7 +18341,11 @@ test "undo log: replayUndoTo respects the watermark and only unwinds newer recor
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_undo_log_watermark_replay.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_undo_log_watermark_replay.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16459,11 +18369,23 @@ test "undo log: replayUndoTo respects the watermark and only unwinds newer recor
     var key3: [8]u8 = undefined;
     std.mem.writeInt(u64, &key3, 3, .big);
 
-    const row1 = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &[_]Value{.{ .integer = 1 }});
+    const row1 = try mvcc_mod.serializeVersionedRow(
+        testing.allocator,
+        header,
+        &[_]Value{.{ .integer = 1 }},
+    );
     defer testing.allocator.free(row1);
-    const row2 = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &[_]Value{.{ .integer = 2 }});
+    const row2 = try mvcc_mod.serializeVersionedRow(
+        testing.allocator,
+        header,
+        &[_]Value{.{ .integer = 2 }},
+    );
     defer testing.allocator.free(row2);
-    const row3 = try mvcc_mod.serializeVersionedRow(testing.allocator, header, &[_]Value{.{ .integer = 3 }});
+    const row3 = try mvcc_mod.serializeVersionedRow(
+        testing.allocator,
+        header,
+        &[_]Value{.{ .integer = 3 }},
+    );
     defer testing.allocator.free(row3);
 
     // Physically apply three "inserts" and record undo for each, in order.
@@ -16588,7 +18510,9 @@ test "step 2: ON CONFLICT DO NOTHING does not add undo entry for retracted inser
     // Second INSERT with ON CONFLICT DO NOTHING: should NOT add a new undo entry
     // (the insert is retracted, so no undo record should be left behind)
     {
-        var r = try db.exec("INSERT INTO step2_conflict (id, val) VALUES (1, 200) ON CONFLICT DO NOTHING");
+        var r = try db.exec(
+            "INSERT INTO step2_conflict (id, val) VALUES (1, 200) ON CONFLICT DO NOTHING",
+        );
         r.close(testing.allocator);
     }
 
@@ -16792,7 +18716,8 @@ test "step 4: UPDATE records an undo entry with before and after data" {
     try testing.expectEqualStrings("step4_upd", rec.table_name);
     try testing.expect(rec.before_data != null); // UPDATE: before_data is the original row
     try testing.expect(rec.before_data.?.len > 0); // before_data contains serialized row
-    try testing.expect(rec.after_data != null); // UPDATE: after_data is the new row (unlike DELETE which is null)
+    // UPDATE: after_data is the new row (unlike DELETE which is null)
+    try testing.expect(rec.after_data != null);
     try testing.expect(rec.after_data.?.len > 0); // after_data contains serialized row
 
     // Verify that before and after are different (the value changed from 42 to 100)
@@ -16914,7 +18839,11 @@ test "step 5: ON CONFLICT DO UPDATE records an undo entry" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_on_conflict_update_undo.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step5_on_conflict_update_undo.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16940,7 +18869,10 @@ test "step 5: ON CONFLICT DO UPDATE records an undo entry" {
     // Begin a NEW transaction and do ON CONFLICT DO UPDATE on the same row
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO step5_conflict (id, val) VALUES (1, 200) ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val");
+        var r = try db.exec(
+            "INSERT INTO step5_conflict (id, val) VALUES (1, 200) ON CONFLICT (id) DO " ++
+                "UPDATE SET val = EXCLUDED.val",
+        );
         r.close(testing.allocator);
     }
 
@@ -16970,7 +18902,11 @@ test "step 5: ON CONFLICT DO UPDATE with no prior undo entries from the plain in
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_on_conflict_update_no_plain_undo.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step5_on_conflict_update_no_plain_undo.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -16981,7 +18917,9 @@ test "step 5: ON CONFLICT DO UPDATE with no prior undo entries from the plain in
 
     // Create a unique index on id
     {
-        var r = try db.exec("CREATE UNIQUE INDEX step5_conflict_plain_idx ON step5_conflict_plain (id)");
+        var r = try db.exec(
+            "CREATE UNIQUE INDEX step5_conflict_plain_idx ON step5_conflict_plain (id)",
+        );
         r.close(testing.allocator);
     }
 
@@ -16996,7 +18934,10 @@ test "step 5: ON CONFLICT DO UPDATE with no prior undo entries from the plain in
     // Begin a NEW transaction and do ON CONFLICT DO UPDATE
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO step5_conflict_plain (id, val) VALUES (1, 200) ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val");
+        var r = try db.exec(
+            "INSERT INTO step5_conflict_plain (id, val) VALUES (1, 200) ON CONFLICT (id) " ++
+                "DO UPDATE SET val = EXCLUDED.val",
+        );
         r.close(testing.allocator);
     }
 
@@ -17017,7 +18958,11 @@ test "step 5: multiple ON CONFLICT DO UPDATE upserts each add one undo entry" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step5_on_conflict_update_multi.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step5_on_conflict_update_multi.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17028,7 +18973,9 @@ test "step 5: multiple ON CONFLICT DO UPDATE upserts each add one undo entry" {
 
     // Create a unique index on id
     {
-        var r = try db.exec("CREATE UNIQUE INDEX step5_conflict_multi_idx ON step5_conflict_multi (id)");
+        var r = try db.exec(
+            "CREATE UNIQUE INDEX step5_conflict_multi_idx ON step5_conflict_multi (id)",
+        );
         r.close(testing.allocator);
     }
 
@@ -17047,11 +18994,17 @@ test "step 5: multiple ON CONFLICT DO UPDATE upserts each add one undo entry" {
     // Begin a NEW transaction and do two separate ON CONFLICT DO UPDATE statements
     try db.beginTransaction(.read_committed);
     {
-        var r = try db.exec("INSERT INTO step5_conflict_multi (id, val) VALUES (1, 150) ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val");
+        var r = try db.exec(
+            "INSERT INTO step5_conflict_multi (id, val) VALUES (1, 150) ON CONFLICT (id) " ++
+                "DO UPDATE SET val = EXCLUDED.val",
+        );
         r.close(testing.allocator);
     }
     {
-        var r = try db.exec("INSERT INTO step5_conflict_multi (id, val) VALUES (2, 250) ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val");
+        var r = try db.exec(
+            "INSERT INTO step5_conflict_multi (id, val) VALUES (2, 250) ON CONFLICT (id) " ++
+                "DO UPDATE SET val = EXCLUDED.val",
+        );
         r.close(testing.allocator);
     }
 
@@ -17081,7 +19034,11 @@ test "step 6: MERGE WHEN NOT MATCHED THEN INSERT records undo entry" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_insert_undo.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_merge_insert_undo.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17108,7 +19065,8 @@ test "step 6: MERGE WHEN NOT MATCHED THEN INSERT records undo entry" {
         var r = try db.exec(
             \\MERGE INTO step6_merge_tgt
             \\USING step6_merge_src ON step6_merge_tgt.id = step6_merge_src.id
-            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (step6_merge_src.id, step6_merge_src.val)
+            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (step6_merge_src.id,
+            \\step6_merge_src.val)
         );
         r.close(testing.allocator);
     }
@@ -17136,7 +19094,11 @@ test "step 6: MERGE WHEN MATCHED THEN UPDATE records undo entry" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_update_undo.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_merge_update_undo.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17198,7 +19160,11 @@ test "step 6: MERGE WHEN MATCHED THEN DELETE records undo entry" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_delete_undo.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_merge_delete_undo.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17258,7 +19224,11 @@ test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN UPDATE records undo entry" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_not_matched_src_update_undo.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_merge_not_matched_src_update_undo.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17269,7 +19239,9 @@ test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN UPDATE records undo entry" {
     }
 
     {
-        var r = try db.exec("INSERT INTO step6_merge_nms_upd_tgt (id, val) VALUES (1, 'matched'), (2, 'unmatched')");
+        var r = try db.exec(
+            "INSERT INTO step6_merge_nms_upd_tgt (id, val) VALUES (1, 'matched'), (2, 'unmatched')",
+        );
         r.close(testing.allocator);
     }
 
@@ -17289,7 +19261,8 @@ test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN UPDATE records undo entry" {
     {
         var r = try db.exec(
             \\MERGE INTO step6_merge_nms_upd_tgt
-            \\USING step6_merge_nms_upd_src ON step6_merge_nms_upd_tgt.id = step6_merge_nms_upd_src.id
+            \\USING step6_merge_nms_upd_src ON step6_merge_nms_upd_tgt.id =
+            \\step6_merge_nms_upd_src.id
             \\WHEN NOT MATCHED BY SOURCE THEN UPDATE SET val = 'updated_no_match'
         );
         r.close(testing.allocator);
@@ -17320,7 +19293,11 @@ test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN DELETE records undo entry" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_not_matched_src_delete_undo.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_merge_not_matched_src_delete_undo.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17331,7 +19308,9 @@ test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN DELETE records undo entry" {
     }
 
     {
-        var r = try db.exec("INSERT INTO step6_merge_nms_del_tgt (id, val) VALUES (1, 'matched'), (2, 'unmatched')");
+        var r = try db.exec(
+            "INSERT INTO step6_merge_nms_del_tgt (id, val) VALUES (1, 'matched'), (2, 'unmatched')",
+        );
         r.close(testing.allocator);
     }
 
@@ -17351,7 +19330,8 @@ test "step 6: MERGE WHEN NOT MATCHED BY SOURCE THEN DELETE records undo entry" {
     {
         var r = try db.exec(
             \\MERGE INTO step6_merge_nms_del_tgt
-            \\USING step6_merge_nms_del_src ON step6_merge_nms_del_tgt.id = step6_merge_nms_del_src.id
+            \\USING step6_merge_nms_del_src ON step6_merge_nms_del_tgt.id =
+            \\step6_merge_nms_del_src.id
             \\WHEN NOT MATCHED BY SOURCE THEN DELETE
         );
         r.close(testing.allocator);
@@ -17380,7 +19360,11 @@ test "step 6: MERGE with multiple mutations records one undo entry per mutation"
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_merge_multi_mutations_undo.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_merge_multi_mutations_undo.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17402,7 +19386,9 @@ test "step 6: MERGE with multiple mutations records one undo entry per mutation"
     }
 
     {
-        var r = try db.exec("INSERT INTO step6_merge_multi_src (id, val) VALUES (1, 'updated'), (2, 'new')");
+        var r = try db.exec(
+            "INSERT INTO step6_merge_multi_src (id, val) VALUES (1, 'updated'), (2, 'new')",
+        );
         r.close(testing.allocator);
     }
 
@@ -17413,7 +19399,8 @@ test "step 6: MERGE with multiple mutations records one undo entry per mutation"
             \\MERGE INTO step6_merge_multi_tgt
             \\USING step6_merge_multi_src ON step6_merge_multi_tgt.id = step6_merge_multi_src.id
             \\WHEN MATCHED THEN UPDATE SET val = step6_merge_multi_src.val
-            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (step6_merge_multi_src.id, step6_merge_multi_src.val)
+            \\WHEN NOT MATCHED THEN INSERT (id, val) VALUES (step6_merge_multi_src.id,
+            \\step6_merge_multi_src.val)
         );
         r.close(testing.allocator);
     }
@@ -17449,7 +19436,11 @@ test "MVCC isolation: multiple sequential transactions accumulate data" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_iso_sequential_accumulate.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_iso_sequential_accumulate.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -17498,7 +19489,7 @@ test "MVCC isolation: multiple sequential transactions accumulate data" {
     try db.commitTransaction();
 }
 
-// ── SSI (Serializable Snapshot Isolation) Tests ──────────────────────
+// ── SSI (Serializable Snapshot Isolation) Tests ───────────────
 
 test "SSI: single serializable transaction commits successfully" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -18181,7 +20172,7 @@ test "SSI: abort cleans up SSI state" {
     // try testing.expectEqual(@as(usize, 0), db.ssi_tracker.trackedTxnCount());
 }
 
-// ── Auto-Vacuum Engine Integration Tests ──────────────────────────────
+// ── Auto-Vacuum Engine Integration Tests ─────────────────
 
 test "auto-vacuum: tracks DML modifications" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -18194,7 +20185,12 @@ test "auto-vacuum: tracks DML modifications" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_track.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+        .auto_vacuum = .{
+            .enabled = true,
+            .threshold = 1000,
+            .scale_factor = 0.0,
+            .min_commit_interval = 0,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18218,7 +20214,12 @@ test "auto-vacuum: UPDATE increments dead tuples" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_update.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+        .auto_vacuum = .{
+            .enabled = true,
+            .threshold = 1000,
+            .scale_factor = 0.0,
+            .min_commit_interval = 0,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18243,7 +20244,12 @@ test "auto-vacuum: DELETE increments dead tuples" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_delete.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+        .auto_vacuum = .{
+            .enabled = true,
+            .threshold = 1000,
+            .scale_factor = 0.0,
+            .min_commit_interval = 0,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18270,7 +20276,12 @@ test "auto-vacuum: triggers vacuum when threshold exceeded" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_trigger.db", .{dir_path});
     // Low threshold: vacuum after 2 dead tuples, no min commit interval
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = true, .threshold = 2, .scale_factor = 0.0, .min_commit_interval = 1 },
+        .auto_vacuum = .{
+            .enabled = true,
+            .threshold = 2,
+            .scale_factor = 0.0,
+            .min_commit_interval = 1,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18308,7 +20319,12 @@ test "auto-vacuum: disabled config prevents vacuum" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_disabled.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = false, .threshold = 0, .scale_factor = 0.0, .min_commit_interval = 0 },
+        .auto_vacuum = .{
+            .enabled = false,
+            .threshold = 0,
+            .scale_factor = 0.0,
+            .min_commit_interval = 0,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18332,7 +20348,12 @@ test "auto-vacuum: DROP TABLE removes tracking" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_drop.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+        .auto_vacuum = .{
+            .enabled = true,
+            .threshold = 1000,
+            .scale_factor = 0.0,
+            .min_commit_interval = 0,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18372,7 +20393,12 @@ test "auto-vacuum: multiple tables tracked independently" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_multi.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+        .auto_vacuum = .{
+            .enabled = true,
+            .threshold = 1000,
+            .scale_factor = 0.0,
+            .min_commit_interval = 0,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18401,7 +20427,12 @@ test "auto-vacuum: auto-commit DML triggers vacuum" {
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_autocommit.db", .{dir_path});
     // Very low threshold — should trigger on single delete
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = true, .threshold = 1, .scale_factor = 0.0, .min_commit_interval = 1 },
+        .auto_vacuum = .{
+            .enabled = true,
+            .threshold = 1,
+            .scale_factor = 0.0,
+            .min_commit_interval = 1,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18430,7 +20461,12 @@ test "auto-vacuum: commit count tracked across tables" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_autovac_commits.db", .{dir_path});
     var db = try Database.open(testing.allocator, path, .{
-        .auto_vacuum = .{ .enabled = true, .threshold = 1000, .scale_factor = 0.0, .min_commit_interval = 0 },
+        .auto_vacuum = .{
+            .enabled = true,
+            .threshold = 1000,
+            .scale_factor = 0.0,
+            .min_commit_interval = 0,
+        },
     });
     defer cleanupTestDb(&db, path);
 
@@ -18452,7 +20488,7 @@ test "auto-vacuum: commit count tracked across tables" {
     try testing.expectEqual(@as(u64, 2), s2.commits_since_vacuum);
 }
 
-// ── View integration tests ──────────────────────────────────────────────
+// ── View integration tests ──────────────────────
 
 test "CREATE VIEW and SELECT from view" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -18470,10 +20506,14 @@ test "CREATE VIEW and SELECT from view" {
     var r1 = try db.execSQL("CREATE TABLE users (id INTEGER, name TEXT, active INTEGER)");
     defer r1.close(testing.allocator);
 
-    var r2 = try db.execSQL("INSERT INTO users VALUES (1, 'Alice', 1), (2, 'Bob', 0), (3, 'Carol', 1)");
+    var r2 = try db.execSQL(
+        "INSERT INTO users VALUES (1, 'Alice', 1), (2, 'Bob', 0), (3, 'Carol', 1)",
+    );
     defer r2.close(testing.allocator);
 
-    var r3 = try db.execSQL("CREATE VIEW active_users AS SELECT id, name FROM users WHERE active = 1");
+    var r3 = try db.execSQL(
+        "CREATE VIEW active_users AS SELECT id, name FROM users WHERE active = 1",
+    );
     defer r3.close(testing.allocator);
     try testing.expectEqualStrings("CREATE VIEW", r3.message);
 
@@ -18745,10 +20785,14 @@ test "view with WHERE clause filters correctly" {
 
     var r1 = try db.execSQL("CREATE TABLE scores (name TEXT, score INTEGER)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO scores VALUES ('Alice', 95), ('Bob', 45), ('Carol', 80), ('Dave', 30)");
+    var r2 = try db.execSQL(
+        "INSERT INTO scores VALUES ('Alice', 95), ('Bob', 45), ('Carol', 80), ('Dave', 30)",
+    );
     defer r2.close(testing.allocator);
 
-    var r3 = try db.execSQL("CREATE VIEW high_scores AS SELECT name, score FROM scores WHERE score >= 80");
+    var r3 = try db.execSQL(
+        "CREATE VIEW high_scores AS SELECT name, score FROM scores WHERE score >= 80",
+    );
     defer r3.close(testing.allocator);
 
     var r4 = try db.execSQL("SELECT * FROM high_scores");
@@ -18851,7 +20895,7 @@ test "view appears in view list" {
     try testing.expectEqual(@as(usize, 2), views.len);
 }
 
-// ── CTE (WITH ... AS) Integration Tests ──────────────────────────────
+// ── CTE (WITH ... AS) Integration Tests ──────────────────
 
 test "CTE: simple CTE from table" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -18905,7 +20949,9 @@ test "CTE: CTE referencing real table" {
     var r2 = try db.execSQL("INSERT INTO items VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry')");
     defer r2.close(testing.allocator);
 
-    var r3 = try db.execSQL("WITH fruits AS (SELECT id, name FROM items WHERE id <= 2) SELECT * FROM fruits");
+    var r3 = try db.execSQL(
+        "WITH fruits AS (SELECT id, name FROM items WHERE id <= 2) SELECT * FROM fruits",
+    );
     defer r3.close(testing.allocator);
 
     try testing.expect(r3.rows != null);
@@ -19000,11 +21046,14 @@ test "CTE: CTE with aggregate" {
 
     var r1 = try db.execSQL("CREATE TABLE scores (student TEXT, score INTEGER)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO scores VALUES ('alice', 90), ('bob', 85), ('alice', 95), ('bob', 80)");
+    var r2 = try db.execSQL(
+        "INSERT INTO scores VALUES ('alice', 90), ('bob', 85), ('alice', 95), ('bob', 80)",
+    );
     defer r2.close(testing.allocator);
 
     var r3 = try db.execSQL(
-        "WITH totals AS (SELECT student, SUM(score) AS total FROM scores GROUP BY student) SELECT * FROM totals ORDER BY total DESC",
+        "WITH totals AS (SELECT student, SUM(score) AS total FROM scores GROUP BY " ++
+            "student) SELECT * FROM totals ORDER BY total DESC",
     );
     defer r3.close(testing.allocator);
 
@@ -19083,7 +21132,7 @@ test "CTE: empty CTE result" {
     try testing.expect(row == null);
 }
 
-// ── Set Operation Tests ──────────────────────────────────────────────
+// ── Set Operation Tests ───────────────────────
 
 test "UNION ALL returns all rows from both queries" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -19258,7 +21307,9 @@ test "UNION ALL with ORDER BY and LIMIT" {
         r4.close(testing.allocator);
     }
 
-    var r5 = try db.execSQL("SELECT id, name FROM t1 UNION ALL SELECT id, label FROM t2 ORDER BY id LIMIT 3");
+    var r5 = try db.execSQL(
+        "SELECT id, name FROM t1 UNION ALL SELECT id, label FROM t2 ORDER BY id LIMIT 3",
+    );
     defer r5.close(testing.allocator);
 
     var ids = std.ArrayListUnmanaged(i64){};
@@ -19355,7 +21406,8 @@ test "UNION with CTE" {
     defer r2.close(testing.allocator);
 
     var r3 = try db.execSQL(
-        "WITH low AS (SELECT id FROM t1 WHERE id <= 2) SELECT id FROM low UNION ALL SELECT id FROM t1 WHERE id >= 2",
+        "WITH low AS (SELECT id FROM t1 WHERE id <= 2) SELECT id FROM low UNION ALL " ++
+            "SELECT id FROM t1 WHERE id >= 2",
     );
     defer r3.close(testing.allocator);
 
@@ -19440,7 +21492,10 @@ test "SELECT DISTINCT removes duplicate rows" {
 
     var r1 = try db.execSQL("CREATE TABLE products (name TEXT, category TEXT)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO products VALUES ('Apple', 'Fruit'), ('Banana', 'Fruit'), ('Apple', 'Fruit'), ('Carrot', 'Vegetable'), ('Banana', 'Fruit')");
+    var r2 = try db.execSQL(
+        "INSERT INTO products VALUES ('Apple', 'Fruit'), ('Banana', 'Fruit'), ('Apple', " ++
+            "'Fruit'), ('Carrot', 'Vegetable'), ('Banana', 'Fruit')",
+    );
     defer r2.close(testing.allocator);
 
     var r3 = try db.execSQL("SELECT DISTINCT name, category FROM products");
@@ -19596,11 +21651,17 @@ test "SELECT DISTINCT ON returns first row per group" {
 
     var r1 = try db.execSQL("CREATE TABLE employees (dept TEXT, name TEXT, salary INTEGER)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO employees VALUES ('Engineering', 'Alice', 120000), ('Engineering', 'Bob', 110000), ('Sales', 'Carol', 90000), ('Sales', 'Dave', 95000), ('HR', 'Eve', 80000)");
+    var r2 = try db.execSQL(
+        "INSERT INTO employees VALUES ('Engineering', 'Alice', 120000), ('Engineering', " ++
+            "'Bob', 110000), ('Sales', 'Carol', 90000), ('Sales', 'Dave', 95000), ('HR', " ++
+            "'Eve', 80000)",
+    );
     defer r2.close(testing.allocator);
 
     // Get the highest-paid person per department
-    var r3 = try db.execSQL("SELECT DISTINCT ON (dept) dept, name, salary FROM employees ORDER BY dept, salary DESC");
+    var r3 = try db.execSQL(
+        "SELECT DISTINCT ON (dept) dept, name, salary FROM employees ORDER BY dept, salary DESC",
+    );
     defer r3.close(testing.allocator);
 
     var count: usize = 0;
@@ -19635,7 +21696,9 @@ test "SELECT DISTINCT ON multiple columns" {
 
     var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER, c TEXT)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 1, 'x'), (1, 1, 'y'), (1, 2, 'z'), (2, 1, 'w')");
+    var r2 = try db.execSQL(
+        "INSERT INTO t VALUES (1, 1, 'x'), (1, 1, 'y'), (1, 2, 'z'), (2, 1, 'w')",
+    );
     defer r2.close(testing.allocator);
 
     var r3 = try db.execSQL("SELECT DISTINCT ON (a, b) a, b, c FROM t ORDER BY a, b");
@@ -19718,7 +21781,9 @@ test "SELECT DISTINCT with WHERE clause" {
 
     var r1 = try db.execSQL("CREATE TABLE t (category TEXT, val INTEGER)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO t VALUES ('A', 1), ('B', 2), ('A', 3), ('B', 4), ('A', 1)");
+    var r2 = try db.execSQL(
+        "INSERT INTO t VALUES ('A', 1), ('B', 2), ('A', 3), ('B', 4), ('A', 1)",
+    );
     defer r2.close(testing.allocator);
 
     var r3 = try db.execSQL("SELECT DISTINCT category FROM t WHERE val > 1");
@@ -19734,7 +21799,7 @@ test "SELECT DISTINCT with WHERE clause" {
     try testing.expectEqual(@as(usize, 2), count);
 }
 
-// ── CTE advanced scenarios ───────────────────────────────────
+// ── CTE advanced scenarios ──────────────────────
 
 test "CTE: CTE referencing another CTE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -19756,7 +21821,8 @@ test "CTE: CTE referencing another CTE" {
 
     // cte2 references cte1
     var r = try db.execSQL(
-        "WITH cte1 AS (SELECT n FROM nums WHERE n > 10), cte2 AS (SELECT n FROM cte1 WHERE n < 30) SELECT * FROM cte2",
+        "WITH cte1 AS (SELECT n FROM nums WHERE n > 10), cte2 AS (SELECT n FROM cte1 " ++
+            "WHERE n < 30) SELECT * FROM cte2",
     );
     defer r.close(testing.allocator);
 
@@ -19785,14 +21851,19 @@ test "CTE: CTE with JOIN to real table" {
     defer r1.close(testing.allocator);
     var r2 = try db.execSQL("INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales')");
     defer r2.close(testing.allocator);
-    var r3 = try db.execSQL("CREATE TABLE employees (emp_id INTEGER, dept_id INTEGER, emp_name TEXT)");
+    var r3 = try db.execSQL(
+        "CREATE TABLE employees (emp_id INTEGER, dept_id INTEGER, emp_name TEXT)",
+    );
     defer r3.close(testing.allocator);
-    var r4 = try db.execSQL("INSERT INTO employees VALUES (1, 1, 'Alice'), (2, 1, 'Bob'), (3, 2, 'Carol')");
+    var r4 = try db.execSQL(
+        "INSERT INTO employees VALUES (1, 1, 'Alice'), (2, 1, 'Bob'), (3, 2, 'Carol')",
+    );
     defer r4.close(testing.allocator);
 
     // CTE joined with real table — use unique column names to avoid ambiguity
     var r = try db.execSQL(
-        "WITH eng AS (SELECT dept_id, emp_name FROM employees WHERE dept_id = 1) SELECT emp_name, dept_name FROM eng JOIN departments ON eng.dept_id = departments.id",
+        "WITH eng AS (SELECT dept_id, emp_name FROM employees WHERE dept_id = 1) SELECT " ++
+            "emp_name, dept_name FROM eng JOIN departments ON eng.dept_id = departments.id",
     );
     defer r.close(testing.allocator);
 
@@ -19827,7 +21898,8 @@ test "CTE: CTE with GROUP BY and aggregate" {
     defer r2.close(testing.allocator);
 
     var r = try db.execSQL(
-        "WITH totals AS (SELECT product, SUM(amount) AS total FROM orders GROUP BY product) SELECT * FROM totals ORDER BY product",
+        "WITH totals AS (SELECT product, SUM(amount) AS total FROM orders GROUP BY " ++
+            "product) SELECT * FROM totals ORDER BY product",
     );
     defer r.close(testing.allocator);
 
@@ -19879,7 +21951,7 @@ test "CTE: CTE with LIMIT" {
     try testing.expectEqual(@as(usize, 3), count);
 }
 
-// ── Recursive CTE tests ─────────────────────────────────────
+// ── Recursive CTE tests ───────────────────────
 
 test "recursive CTE: counting sequence" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -19965,7 +22037,8 @@ test "recursive CTE: tree traversal" {
     var r1 = try db.execSQL("CREATE TABLE org (id INTEGER, parent_id INTEGER, name TEXT)");
     defer r1.close(testing.allocator);
     var r2 = try db.execSQL(
-        "INSERT INTO org VALUES (1, 0, 'CEO'), (2, 1, 'VP1'), (3, 1, 'VP2'), (4, 2, 'Mgr1'), (5, 3, 'Mgr2')",
+        "INSERT INTO org VALUES (1, 0, 'CEO'), (2, 1, 'VP1'), (3, 1, 'VP2'), (4, 2, " ++
+            "'Mgr1'), (5, 3, 'Mgr2')",
     );
     defer r2.close(testing.allocator);
 
@@ -20143,7 +22216,7 @@ test "recursive CTE: count result" {
     try testing.expectEqual(@as(i64, 20), row.values[0].integer);
 }
 
-// ── VIEW advanced scenarios ──────────────────────────────────
+// ── VIEW advanced scenarios ──────────────────────
 
 test "view with JOIN query" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -20164,11 +22237,16 @@ test "view with JOIN query" {
     defer r2.close(testing.allocator);
     var r3 = try db.execSQL("CREATE TABLE items (item_id INTEGER, cat_id INTEGER, title TEXT)");
     defer r3.close(testing.allocator);
-    var r4 = try db.execSQL("INSERT INTO items VALUES (1, 1, 'Dune'), (2, 2, 'Chess'), (3, 1, 'LOTR')");
+    var r4 = try db.execSQL(
+        "INSERT INTO items VALUES (1, 1, 'Dune'), (2, 2, 'Chess'), (3, 1, 'LOTR')",
+    );
     defer r4.close(testing.allocator);
 
     // Create a view with JOIN — use unique column names
-    var rv = try db.execSQL("CREATE VIEW item_categories AS SELECT title, cat_name FROM items JOIN categories ON items.cat_id = categories.id");
+    var rv = try db.execSQL(
+        "CREATE VIEW item_categories AS SELECT title, cat_name FROM items JOIN " ++
+            "categories ON items.cat_id = categories.id",
+    );
     defer rv.close(testing.allocator);
 
     var r = try db.execSQL("SELECT * FROM item_categories ORDER BY title");
@@ -20202,10 +22280,15 @@ test "view with aggregate query" {
 
     var r1 = try db.execSQL("CREATE TABLE scores (player TEXT, points INTEGER)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO scores VALUES ('Alice', 10), ('Bob', 20), ('Alice', 30), ('Bob', 5)");
+    var r2 = try db.execSQL(
+        "INSERT INTO scores VALUES ('Alice', 10), ('Bob', 20), ('Alice', 30), ('Bob', 5)",
+    );
     defer r2.close(testing.allocator);
 
-    var rv = try db.execSQL("CREATE VIEW player_totals AS SELECT player, SUM(points) AS total FROM scores GROUP BY player");
+    var rv = try db.execSQL(
+        "CREATE VIEW player_totals AS SELECT player, SUM(points) AS total FROM scores " ++
+            "GROUP BY player",
+    );
     defer rv.close(testing.allocator);
 
     var r = try db.execSQL("SELECT * FROM player_totals ORDER BY player");
@@ -20243,7 +22326,10 @@ test "view with ORDER BY and LIMIT in definition" {
     var r2 = try db.execSQL("INSERT INTO products VALUES ('A', 30), ('B', 10), ('C', 20)");
     defer r2.close(testing.allocator);
 
-    var rv = try db.execSQL("CREATE VIEW cheap_products AS SELECT name, price FROM products WHERE price < 25 ORDER BY price");
+    var rv = try db.execSQL(
+        "CREATE VIEW cheap_products AS SELECT name, price FROM products WHERE price < 25 " ++
+            "ORDER BY price",
+    );
     defer rv.close(testing.allocator);
 
     var r = try db.execSQL("SELECT * FROM cheap_products");
@@ -20333,7 +22419,7 @@ test "view with NULL values" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
-// ── Set operations advanced scenarios ────────────────────────
+// ── Set operations advanced scenarios ──────────────────
 
 test "UNION ALL with NULL values" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -20514,7 +22600,8 @@ test "UNION with aggregate queries" {
     defer r4.close(testing.allocator);
 
     var r = try db.execSQL(
-        "SELECT category, SUM(val) AS total FROM t1 GROUP BY category UNION ALL SELECT category, SUM(val) AS total FROM t2 GROUP BY category ORDER BY category",
+        "SELECT category, SUM(val) AS total FROM t1 GROUP BY category UNION ALL SELECT " ++
+            "category, SUM(val) AS total FROM t2 GROUP BY category ORDER BY category",
     );
     defer r.close(testing.allocator);
 
@@ -20594,7 +22681,8 @@ test "CTE with set operation" {
 
     // CTE defined, then used in both sides of INTERSECT
     var r = try db.execSQL(
-        "WITH combined AS (SELECT val FROM t1 UNION ALL SELECT val FROM t2) SELECT DISTINCT val FROM combined ORDER BY val",
+        "WITH combined AS (SELECT val FROM t1 UNION ALL SELECT val FROM t2) SELECT " ++
+            "DISTINCT val FROM combined ORDER BY val",
     );
     defer r.close(testing.allocator);
 
@@ -20630,11 +22718,15 @@ test "view with multiple columns and WHERE" {
 
     var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, category TEXT, val INTEGER)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO t VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'B', 40)");
+    var r2 = try db.execSQL(
+        "INSERT INTO t VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'B', 40)",
+    );
     defer r2.close(testing.allocator);
 
     // View with WHERE
-    var rv = try db.execSQL("CREATE VIEW high_vals AS SELECT id, category, val FROM t WHERE val > 15");
+    var rv = try db.execSQL(
+        "CREATE VIEW high_vals AS SELECT id, category, val FROM t WHERE val > 15",
+    );
     defer rv.close(testing.allocator);
 
     var r = try db.execSQL("SELECT * FROM high_vals ORDER BY id");
@@ -20705,7 +22797,7 @@ test "view persistence across close and reopen" {
     std.fs.cwd().deleteFile(path) catch {};
 }
 
-// ── Recursive CTE depth limit test ──────────────────────────
+// ── Recursive CTE depth limit test ───────────────────
 
 test "recursive CTE: depth limit caps at 1000 iterations" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -20802,7 +22894,7 @@ test "recursive CTE: with ORDER BY on result" {
     try testing.expectEqual(@as(i64, 5), prev);
 }
 
-// ── CYCLE Clause Tests (SQL:1999) ─────────────────────────────────
+// ── CYCLE Clause Tests (SQL:1999) ────────────────────
 
 test "CYCLE: basic cycle detection in recursive CTE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21047,7 +23139,7 @@ test "CYCLE: without CYCLE clause still works (no regression)" {
     try testing.expectEqual(@as(usize, 5), count);
 }
 
-// ── Updatable View Tests ──────────────────────────────────────────
+// ── Updatable View Tests ───────────────────────
 
 test "INSERT through updatable view" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21164,7 +23256,11 @@ test "DELETE through updatable view with WHERE merging" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_del_where.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_updatable_view_del_where.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21202,7 +23298,11 @@ test "UPDATE through updatable view with WHERE merging" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_updatable_view_upd_where.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_updatable_view_upd_where.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -21212,7 +23312,9 @@ test "UPDATE through updatable view with WHERE merging" {
     _ = try db.exec("INSERT INTO t1 VALUES (3, 'active', 30)");
 
     // View filters only active rows
-    _ = try db.exec("CREATE VIEW active_v AS SELECT id, status, val FROM t1 WHERE status = 'active'");
+    _ = try db.exec(
+        "CREATE VIEW active_v AS SELECT id, status, val FROM t1 WHERE status = 'active'",
+    );
 
     // UPDATE through view — should only update active rows
     var ur = try db.exec("UPDATE active_v SET val = 99");
@@ -21247,7 +23349,10 @@ test "WITH CHECK OPTION blocks INSERT violating view condition" {
     defer cleanupTestDb(&db, path);
 
     _ = try db.exec("CREATE TABLE t1 (id INTEGER, status TEXT)");
-    _ = try db.exec("CREATE VIEW active_v AS SELECT id, status FROM t1 WHERE status = 'active' WITH CHECK OPTION");
+    _ = try db.exec(
+        "CREATE VIEW active_v AS SELECT id, status FROM t1 WHERE status = 'active' WITH " ++
+            "CHECK OPTION",
+    );
 
     // INSERT satisfying the condition should work
     _ = try db.exec("INSERT INTO active_v VALUES (1, 'active')");
@@ -21280,7 +23385,10 @@ test "WITH CHECK OPTION blocks UPDATE violating view condition" {
 
     _ = try db.exec("CREATE TABLE t1 (id INTEGER, status TEXT)");
     _ = try db.exec("INSERT INTO t1 VALUES (1, 'active')");
-    _ = try db.exec("CREATE VIEW active_v AS SELECT id, status FROM t1 WHERE status = 'active' WITH CHECK OPTION");
+    _ = try db.exec(
+        "CREATE VIEW active_v AS SELECT id, status FROM t1 WHERE status = 'active' WITH " ++
+            "CHECK OPTION",
+    );
 
     // UPDATE that maintains the condition should work
     _ = try db.exec("UPDATE active_v SET id = 10 WHERE id = 1");
@@ -21312,7 +23420,9 @@ test "WITH LOCAL CHECK OPTION stored and enforced" {
     defer cleanupTestDb(&db, path);
 
     _ = try db.exec("CREATE TABLE t1 (id INTEGER, val INTEGER)");
-    _ = try db.exec("CREATE VIEW v1 AS SELECT id, val FROM t1 WHERE val > 0 WITH LOCAL CHECK OPTION");
+    _ = try db.exec(
+        "CREATE VIEW v1 AS SELECT id, val FROM t1 WHERE val > 0 WITH LOCAL CHECK OPTION",
+    );
 
     _ = try db.exec("INSERT INTO v1 VALUES (1, 5)"); // OK
     const result = db.exec("INSERT INTO v1 VALUES (2, -1)"); // violation
@@ -21481,7 +23591,7 @@ test "WITH CHECK OPTION catalog roundtrip" {
     try testing.expectEqual(@as(u8, 1), info.check_option); // 1 = local
 }
 
-// ── Stabilization: LIKE edge case tests ─────────────────────────────────
+// ── Stabilization: LIKE edge case tests ──────────────────
 
 test "LIKE with underscore wildcard" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21616,7 +23726,7 @@ test "LIKE with no wildcard is case-sensitive exact match" {
     try testing.expectEqual(@as(usize, 1), count);
 }
 
-// ── Stabilization: NULL three-valued logic tests ────────────────────────
+// ── Stabilization: NULL three-valued logic tests ───────────────
 
 test "NULL AND FALSE yields FALSE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21711,7 +23821,7 @@ test "NULL OR FALSE yields NULL (row excluded)" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
-// ── Stabilization: non-updatable view rejection tests ───────────────────
+// ── Stabilization: non-updatable view rejection tests ─────────────
 
 test "non-updatable view rejects INSERT (set operation / UNION)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21773,7 +23883,9 @@ test "non-updatable view rejects DELETE (HAVING clause)" {
 
     _ = try db.exec("CREATE TABLE t1 (id INTEGER, cat TEXT)");
     _ = try db.exec("INSERT INTO t1 VALUES (1, 'a')");
-    _ = try db.exec("CREATE VIEW v1 AS SELECT cat, count(*) AS cnt FROM t1 GROUP BY cat HAVING count(*) > 0");
+    _ = try db.exec(
+        "CREATE VIEW v1 AS SELECT cat, count(*) AS cnt FROM t1 GROUP BY cat HAVING count(*) > 0",
+    );
 
     const result = db.exec("DELETE FROM v1 WHERE cat = 'a'");
     try testing.expectError(EngineError.TableNotFound, result);
@@ -21800,7 +23912,7 @@ test "non-updatable view rejects INSERT (CTE)" {
     try testing.expectError(EngineError.TableNotFound, result);
 }
 
-// ── Stabilization: set operation edge case tests ────────────────────────
+// ── Stabilization: set operation edge case tests ───────────────
 
 test "UNION ALL with both sides empty" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21882,7 +23994,7 @@ test "EXCEPT with empty right side returns all left rows" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
-// ── Stabilization: EXPLAIN returns OK ───────────────────────────────────
+// ── Stabilization: EXPLAIN returns OK ──────────────────
 
 test "EXPLAIN SELECT returns plan text" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21908,7 +24020,7 @@ test "EXPLAIN SELECT returns plan text" {
     try testing.expect(std.mem.indexOf(u8, r.message, "Scan: t") != null);
 }
 
-// ── Stabilization: arithmetic edge case ─────────────────────────────────
+// ── Stabilization: arithmetic edge case ──────────────────
 
 test "integer arithmetic in SELECT expressions" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21937,7 +24049,7 @@ test "integer arithmetic in SELECT expressions" {
     try testing.expectEqual(@as(i64, 3), row.values[3].integer); // 10/3 (integer div)
 }
 
-// ── Stabilization: IS NULL / IS NOT NULL edge cases ─────────────────────
+// ── Stabilization: IS NULL / IS NOT NULL edge cases ──────────────
 
 test "IS NULL and IS NOT NULL with mixed values" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21977,7 +24089,7 @@ test "IS NULL and IS NOT NULL with mixed values" {
     try testing.expect((try r2.rows.?.next()) == null);
 }
 
-// ── Stabilization: CASE expression tests ────────────────────────────────
+// ── Stabilization: CASE expression tests ─────────────────
 
 test "CASE WHEN with NULL comparison" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -21996,7 +24108,10 @@ test "CASE WHEN with NULL comparison" {
     _ = try db.exec("INSERT INTO t VALUES (1, 'active')");
     _ = try db.exec("INSERT INTO t VALUES (2, NULL)");
 
-    var r = try db.exec("SELECT id, CASE WHEN status = 'active' THEN 'yes' ELSE 'no' END AS label FROM t ORDER BY id");
+    var r = try db.exec(
+        "SELECT id, CASE WHEN status = 'active' THEN 'yes' ELSE 'no' END AS label FROM t " ++
+            "ORDER BY id",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -22011,7 +24126,7 @@ test "CASE WHEN with NULL comparison" {
     try testing.expectEqualStrings("no", row2.values[1].text);
 }
 
-// ── Stabilization: IN list test ─────────────────────────────────────────
+// ── Stabilization: IN list test ────────────────────
 
 test "IN list with multiple matches" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -22046,7 +24161,7 @@ test "IN list with multiple matches" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
-// ── Stabilization: BETWEEN test ─────────────────────────────────────────
+// ── Stabilization: BETWEEN test ────────────────────
 
 test "NOT BETWEEN excludes range" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -22080,7 +24195,7 @@ test "NOT BETWEEN excludes range" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
-// ── Window Functions: Milestone 9 ────────────────────────────────────
+// ── Window Functions: Milestone 9 ────────────────────
 
 test "ROW_NUMBER() OVER (ORDER BY ...)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -22100,7 +24215,9 @@ test "ROW_NUMBER() OVER (ORDER BY ...)" {
     _ = try db.exec("INSERT INTO emp VALUES (2, 'bob', 60000)");
     _ = try db.exec("INSERT INTO emp VALUES (3, 'charlie', 55000)");
 
-    var r = try db.exec("SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) FROM emp ORDER BY name");
+    var r = try db.exec(
+        "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) FROM emp ORDER BY name",
+    );
     defer r.close(testing.allocator);
 
     // Rows come out ordered by name: alice, bob, charlie
@@ -22218,7 +24335,9 @@ test "ROW_NUMBER() with PARTITION BY" {
     _ = try db.exec("INSERT INTO emp VALUES ('sales', 'charlie', 55000)");
     _ = try db.exec("INSERT INTO emp VALUES ('sales', 'dave', 45000)");
 
-    var r = try db.exec("SELECT dept, name, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM emp");
+    var r = try db.exec(
+        "SELECT dept, name, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM emp",
+    );
     defer r.close(testing.allocator);
 
     // eng partition: alice=1, bob=2; sales partition: charlie=1, dave=2
@@ -22659,7 +24778,10 @@ test "LAST_VALUE() with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
     // Full partition frame — LAST_VALUE returns actual last value
-    var r = try db.exec("SELECT val, LAST_VALUE(val) OVER (ORDER BY val ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM t");
+    var r = try db.exec(
+        "SELECT val, LAST_VALUE(val) OVER (ORDER BY val ROWS BETWEEN UNBOUNDED PRECEDING " ++
+            "AND UNBOUNDED FOLLOWING) FROM t",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -23213,7 +25335,9 @@ test "Window function with PARTITION BY and ORDER BY" {
     _ = try db.exec("INSERT INTO sales VALUES ('sales', 'eve', 250)");
 
     // RANK within each department ordered by amount DESC
-    var r = try db.exec("SELECT dept, emp, amount, RANK() OVER (PARTITION BY dept ORDER BY amount DESC) FROM sales");
+    var r = try db.exec(
+        "SELECT dept, emp, amount, RANK() OVER (PARTITION BY dept ORDER BY amount DESC) FROM sales",
+    );
     defer r.close(testing.allocator);
 
     // eng partition: bob(200)=1, charlie(150)=2, alice(100)=3
@@ -23305,7 +25429,9 @@ test "Window function with self-join" {
     _ = try db.exec("INSERT INTO t VALUES (2, 20)");
 
     // COUNT(*) OVER () on a self-join — tests that window functions work after JOIN
-    var r = try db.exec("SELECT a.id, b.id, COUNT(*) OVER () FROM t AS a JOIN t AS b ON a.id <= b.id ORDER BY a.id");
+    var r = try db.exec(
+        "SELECT a.id, b.id, COUNT(*) OVER () FROM t AS a JOIN t AS b ON a.id <= b.id ORDER BY a.id",
+    );
     defer r.close(testing.allocator);
 
     // Self-join with a.id <= b.id: (1,1), (1,2), (2,2) = 3 rows
@@ -23338,7 +25464,9 @@ test "Window function with CTE" {
     _ = try db.exec("INSERT INTO t VALUES (30)");
 
     // Window function in main query using CTE
-    var r = try db.exec("WITH data AS (SELECT val FROM t) SELECT val, ROW_NUMBER() OVER (ORDER BY val) FROM data");
+    var r = try db.exec(
+        "WITH data AS (SELECT val FROM t) SELECT val, ROW_NUMBER() OVER (ORDER BY val) FROM data",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -23419,7 +25547,9 @@ test "DENSE_RANK with multiple partitions" {
     _ = try db.exec("INSERT INTO scores VALUES ('b', 5)");
     _ = try db.exec("INSERT INTO scores VALUES ('b', 15)");
 
-    var r = try db.exec("SELECT grp, val, DENSE_RANK() OVER (PARTITION BY grp ORDER BY val) FROM scores");
+    var r = try db.exec(
+        "SELECT grp, val, DENSE_RANK() OVER (PARTITION BY grp ORDER BY val) FROM scores",
+    );
     defer r.close(testing.allocator);
 
     // Partition 'a': (10,10,20) → ranks (1,1,2)
@@ -23544,7 +25674,10 @@ test "WINDOW clause: named window with ROW_NUMBER and RANK" {
     _ = try db.exec("INSERT INTO emp VALUES ('charlie', 'sales', 150)");
 
     // Use WINDOW clause to define a named window, referenced by two functions
-    var r = try db.exec("SELECT name, ROW_NUMBER() OVER w, RANK() OVER w FROM emp WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)");
+    var r = try db.exec(
+        "SELECT name, ROW_NUMBER() OVER w, RANK() OVER w FROM emp WINDOW w AS (PARTITION " ++
+            "BY dept ORDER BY salary DESC)",
+    );
     defer r.close(testing.allocator);
 
     // eng partition: bob(200) rn=1 rank=1, alice(100) rn=2 rank=2
@@ -23617,7 +25750,10 @@ test "WINDOW clause: multiple named windows" {
     _ = try db.exec("INSERT INTO items VALUES ('b', 30)");
 
     // Two different named windows
-    var r = try db.exec("SELECT cat, price, ROW_NUMBER() OVER w1, SUM(price) OVER w2 FROM items WINDOW w1 AS (PARTITION BY cat ORDER BY price), w2 AS (ORDER BY price)");
+    var r = try db.exec(
+        "SELECT cat, price, ROW_NUMBER() OVER w1, SUM(price) OVER w2 FROM items WINDOW " ++
+            "w1 AS (PARTITION BY cat ORDER BY price), w2 AS (ORDER BY price)",
+    );
     defer r.close(testing.allocator);
 
     var count: usize = 0;
@@ -23816,7 +25952,11 @@ test "multi-table INSERT with constrained cache forces evictions" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_multi_insert_small_cache.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_multi_insert_small_cache.db",
+        .{dir_path},
+    );
     std.fs.cwd().deleteFile(path) catch {};
     // Use constrained cache (16 frames) and small page size to force splits and evictions.
     // B+Tree splits need 3+ simultaneous pins, so cache_size must be >= 8 for safe operation.
@@ -23832,7 +25972,11 @@ test "multi-table INSERT with constrained cache forces evictions" {
 
     for (0..20) |i| {
         var buf: [128]u8 = undefined;
-        const sql = std.fmt.bufPrint(&buf, "INSERT INTO dept VALUES ({d}, 'department_name_{d}')", .{ i, i }) catch unreachable;
+        const sql = std.fmt.bufPrint(
+            &buf,
+            "INSERT INTO dept VALUES ({d}, 'department_name_{d}')",
+            .{ i, i },
+        ) catch unreachable;
         dept_results[i] = try db.execSQL(sql);
         dept_inited += 1;
     }
@@ -23846,7 +25990,11 @@ test "multi-table INSERT with constrained cache forces evictions" {
 
     for (0..20) |i| {
         var buf: [128]u8 = undefined;
-        const sql = std.fmt.bufPrint(&buf, "INSERT INTO emp VALUES ({d}, {d}, {d}00)", .{ i, i % 3, i }) catch unreachable;
+        const sql = std.fmt.bufPrint(
+            &buf,
+            "INSERT INTO emp VALUES ({d}, {d}, {d}00)",
+            .{ i, i % 3, i },
+        ) catch unreachable;
         emp_results[emp_inited] = try db.execSQL(sql);
         emp_inited += 1;
     }
@@ -23901,7 +26049,10 @@ test "INTERVAL type: CAST from text" {
     var row2 = (try r2.rows.?.next()).?;
     defer row2.deinit();
     try testing.expect(row2.values[0] == .interval);
-    try testing.expectEqual(@as(i64, 2 * 3600_000_000 + 30 * 60_000_000), row2.values[0].interval.micros);
+    try testing.expectEqual(
+        @as(i64, 2 * 3600_000_000 + 30 * 60_000_000),
+        row2.values[0].interval.micros,
+    );
 
     var r3 = try db.execSQL("SELECT CAST('1 year 6 months' AS INTERVAL)");
     defer r3.close(testing.allocator);
@@ -23923,7 +26074,9 @@ test "INTERVAL type: CAST to text" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r1 = try db.execSQL("SELECT CAST(CAST('1 year 2 months 3 days 04:05:06' AS INTERVAL) AS TEXT)");
+    var r1 = try db.execSQL(
+        "SELECT CAST(CAST('1 year 2 months 3 days 04:05:06' AS INTERVAL) AS TEXT)",
+    );
     defer r1.close(testing.allocator);
     var row1 = (try r1.rows.?.next()).?;
     defer row1.deinit();
@@ -23946,7 +26099,9 @@ test "INTERVAL type: store and retrieve" {
 
     var r1 = try db.execSQL("CREATE TABLE events (name TEXT, duration INTERVAL)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO events VALUES ('meeting', CAST('1 hour 30 minutes' AS INTERVAL))");
+    var r2 = try db.execSQL(
+        "INSERT INTO events VALUES ('meeting', CAST('1 hour 30 minutes' AS INTERVAL))",
+    );
     defer r2.close(testing.allocator);
     var r3 = try db.execSQL("INSERT INTO events VALUES ('lunch', CAST('45 minutes' AS INTERVAL))");
     defer r3.close(testing.allocator);
@@ -23980,21 +26135,27 @@ test "INTERVAL type: arithmetic with dates" {
     defer cleanupTestDb(&db, path);
 
     // date + interval → date (cast to text for comparison)
-    var r1 = try db.execSQL("SELECT CAST(CAST('2024-01-15' AS DATE) + CAST('10 days' AS INTERVAL) AS TEXT)");
+    var r1 = try db.execSQL(
+        "SELECT CAST(CAST('2024-01-15' AS DATE) + CAST('10 days' AS INTERVAL) AS TEXT)",
+    );
     defer r1.close(testing.allocator);
     var row1 = (try r1.rows.?.next()).?;
     defer row1.deinit();
     try testing.expectEqualStrings("2024-01-25", row1.values[0].text);
 
     // date + interval with months (day clamping for leap year)
-    var r2 = try db.execSQL("SELECT CAST(CAST('2024-01-31' AS DATE) + CAST('1 month' AS INTERVAL) AS TEXT)");
+    var r2 = try db.execSQL(
+        "SELECT CAST(CAST('2024-01-31' AS DATE) + CAST('1 month' AS INTERVAL) AS TEXT)",
+    );
     defer r2.close(testing.allocator);
     var row2 = (try r2.rows.?.next()).?;
     defer row2.deinit();
     try testing.expectEqualStrings("2024-02-29", row2.values[0].text);
 
     // date - interval → date
-    var r3 = try db.execSQL("SELECT CAST(CAST('2024-03-15' AS DATE) - CAST('1 month 5 days' AS INTERVAL) AS TEXT)");
+    var r3 = try db.execSQL(
+        "SELECT CAST(CAST('2024-03-15' AS DATE) - CAST('1 month 5 days' AS INTERVAL) AS TEXT)",
+    );
     defer r3.close(testing.allocator);
     var row3 = (try r3.rows.?.next()).?;
     defer row3.deinit();
@@ -24054,7 +26215,10 @@ test "INTERVAL type: timestamp arithmetic" {
     defer cleanupTestDb(&db, path);
 
     // timestamp + interval → timestamp (cast to text for comparison)
-    var r1 = try db.execSQL("SELECT CAST(CAST('2024-01-15 10:30:00' AS TIMESTAMP) + CAST('2 days 3 hours' AS INTERVAL) AS TEXT)");
+    var r1 = try db.execSQL(
+        "SELECT CAST(CAST('2024-01-15 10:30:00' AS TIMESTAMP) + CAST('2 days 3 hours' AS " ++
+            "INTERVAL) AS TEXT)",
+    );
     defer r1.close(testing.allocator);
     var row1 = (try r1.rows.?.next()).?;
     defer row1.deinit();
@@ -24100,7 +26264,9 @@ test "INTERVAL type: comparison and ordering" {
     defer r2.close(testing.allocator);
     var r3 = try db.execSQL("INSERT INTO durations VALUES ('long', CAST('2 days' AS INTERVAL))");
     defer r3.close(testing.allocator);
-    var r4 = try db.execSQL("INSERT INTO durations VALUES ('medium', CAST('12 hours' AS INTERVAL))");
+    var r4 = try db.execSQL(
+        "INSERT INTO durations VALUES ('medium', CAST('12 hours' AS INTERVAL))",
+    );
     defer r4.close(testing.allocator);
 
     // ORDER BY interval
@@ -24208,14 +26374,18 @@ test "INTERVAL type: date plus interval with time component" {
     defer cleanupTestDb(&db, path);
 
     // date + interval with time component → TIMESTAMP (not DATE)
-    var r1 = try db.execSQL("SELECT CAST('2024-01-15' AS DATE) + CAST('1 day 6 hours' AS INTERVAL)");
+    var r1 = try db.execSQL(
+        "SELECT CAST('2024-01-15' AS DATE) + CAST('1 day 6 hours' AS INTERVAL)",
+    );
     defer r1.close(testing.allocator);
     var row1 = (try r1.rows.?.next()).?;
     defer row1.deinit();
     try testing.expect(row1.values[0] == .timestamp);
 
     // Cast to text to verify exact value: 2024-01-16 06:00:00
-    var r2 = try db.execSQL("SELECT CAST(CAST('2024-01-15' AS DATE) + CAST('1 day 6 hours' AS INTERVAL) AS TEXT)");
+    var r2 = try db.execSQL(
+        "SELECT CAST(CAST('2024-01-15' AS DATE) + CAST('1 day 6 hours' AS INTERVAL) AS TEXT)",
+    );
     defer r2.close(testing.allocator);
     var row2 = (try r2.rows.?.next()).?;
     defer row2.deinit();
@@ -24231,7 +26401,11 @@ test "INTERVAL type: ORDER BY on non-selected column" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_interval_order_noselect.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_interval_order_noselect.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -24241,7 +26415,9 @@ test "INTERVAL type: ORDER BY on non-selected column" {
     defer r2.close(testing.allocator);
     var r3 = try db.execSQL("INSERT INTO tasks VALUES ('long', CAST('3 hours' AS INTERVAL))");
     defer r3.close(testing.allocator);
-    var r4 = try db.execSQL("INSERT INTO tasks VALUES ('medium', CAST('1 hour 15 minutes' AS INTERVAL))");
+    var r4 = try db.execSQL(
+        "INSERT INTO tasks VALUES ('medium', CAST('1 hour 15 minutes' AS INTERVAL))",
+    );
     defer r4.close(testing.allocator);
 
     // ORDER BY duration even though it's not in SELECT list
@@ -24398,7 +26574,9 @@ test "NUMERIC type: comparison in WHERE clause" {
     _ = try db.exec("INSERT INTO items VALUES ('expensive', CAST('99.99' AS NUMERIC))");
 
     // Filter with numeric comparison
-    var r = try db.exec("SELECT name FROM items WHERE cost > CAST('20.00' AS NUMERIC) ORDER BY cost");
+    var r = try db.exec(
+        "SELECT name FROM items WHERE cost > CAST('20.00' AS NUMERIC) ORDER BY cost",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -24560,14 +26738,16 @@ test "NUMERIC type: negative arithmetic" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(CAST('10.00' AS NUMERIC) - CAST('15.50' AS NUMERIC) AS TEXT)");
+    var r = try db.execSQL(
+        "SELECT CAST(CAST('10.00' AS NUMERIC) - CAST('15.50' AS NUMERIC) AS TEXT)",
+    );
     defer r.close(testing.allocator);
     var row = (try r.rows.?.next()).?;
     defer row.deinit();
     try testing.expectEqualStrings("-5.50", row.values[0].text);
 }
 
-// ── UUID Integration Tests ──────────────────────────────────────────────
+// ── UUID Integration Tests ──────────────────────
 
 test "UUID type: CREATE TABLE, INSERT, SELECT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -24583,8 +26763,12 @@ test "UUID type: CREATE TABLE, INSERT, SELECT" {
     defer cleanupTestDb(&db, path);
 
     _ = try db.exec("CREATE TABLE users (id UUID, name TEXT)");
-    _ = try db.exec("INSERT INTO users VALUES (CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID), 'Alice')");
-    _ = try db.exec("INSERT INTO users VALUES (CAST('6ba7b810-9dad-11d1-80b4-00c04fd430c8' AS UUID), 'Bob')");
+    _ = try db.exec(
+        "INSERT INTO users VALUES (CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID), 'Alice')",
+    );
+    _ = try db.exec(
+        "INSERT INTO users VALUES (CAST('6ba7b810-9dad-11d1-80b4-00c04fd430c8' AS UUID), 'Bob')",
+    );
 
     var r = try db.exec("SELECT CAST(id AS TEXT), name FROM users ORDER BY name");
     defer r.close(testing.allocator);
@@ -24645,7 +26829,9 @@ test "UUID type: CAST roundtrip text→uuid→text" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r = try db.execSQL("SELECT CAST(CAST('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS UUID) AS TEXT)");
+    var r = try db.execSQL(
+        "SELECT CAST(CAST('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS UUID) AS TEXT)",
+    );
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -24688,11 +26874,22 @@ test "UUID type: comparison in WHERE clause" {
     defer cleanupTestDb(&db, path);
 
     _ = try db.exec("CREATE TABLE records (id UUID, label TEXT)");
-    _ = try db.exec("INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000001' AS UUID), 'first')");
-    _ = try db.exec("INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000002' AS UUID), 'second')");
-    _ = try db.exec("INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000003' AS UUID), 'third')");
+    _ = try db.exec(
+        "INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000001' AS " ++
+            "UUID), 'first')",
+    );
+    _ = try db.exec(
+        "INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000002' AS " ++
+            "UUID), 'second')",
+    );
+    _ = try db.exec(
+        "INSERT INTO records VALUES (CAST('00000000-0000-0000-0000-000000000003' AS " ++
+            "UUID), 'third')",
+    );
 
-    var r = try db.exec("SELECT label FROM records WHERE id = CAST('00000000-0000-0000-0000-000000000002' AS UUID)");
+    var r = try db.exec(
+        "SELECT label FROM records WHERE id = CAST('00000000-0000-0000-0000-000000000002' AS UUID)",
+    );
     defer r.close(testing.allocator);
 
     var row = (try r.rows.?.next()).?;
@@ -24716,9 +26913,15 @@ test "UUID type: ORDER BY" {
     defer cleanupTestDb(&db, path);
 
     _ = try db.exec("CREATE TABLE items (id UUID, name TEXT)");
-    _ = try db.exec("INSERT INTO items VALUES (CAST('ffffffff-ffff-ffff-ffff-ffffffffffff' AS UUID), 'last')");
-    _ = try db.exec("INSERT INTO items VALUES (CAST('00000000-0000-0000-0000-000000000000' AS UUID), 'first')");
-    _ = try db.exec("INSERT INTO items VALUES (CAST('80000000-0000-0000-0000-000000000000' AS UUID), 'middle')");
+    _ = try db.exec(
+        "INSERT INTO items VALUES (CAST('ffffffff-ffff-ffff-ffff-ffffffffffff' AS UUID), 'last')",
+    );
+    _ = try db.exec(
+        "INSERT INTO items VALUES (CAST('00000000-0000-0000-0000-000000000000' AS UUID), 'first')",
+    );
+    _ = try db.exec(
+        "INSERT INTO items VALUES (CAST('80000000-0000-0000-0000-000000000000' AS UUID), 'middle')",
+    );
 
     var r = try db.exec("SELECT name FROM items ORDER BY id");
     defer r.close(testing.allocator);
@@ -24949,7 +27152,9 @@ test "UUID type: case-insensitive parsing" {
     defer cleanupTestDb(&db, path);
 
     _ = try db.exec("CREATE TABLE items (id UUID)");
-    _ = try db.exec("INSERT INTO items VALUES (CAST('550E8400-E29B-41D4-A716-446655440000' AS UUID))");
+    _ = try db.exec(
+        "INSERT INTO items VALUES (CAST('550E8400-E29B-41D4-A716-446655440000' AS UUID))",
+    );
 
     var r = try db.exec("SELECT CAST(id AS TEXT) FROM items");
     defer r.close(testing.allocator);
@@ -25144,7 +27349,9 @@ test "DATE type: comparison operators" {
     _ = try db.exec("INSERT INTO events VALUES (CAST('2024-12-25' AS DATE), 'dec')");
 
     // Test >= filter
-    var r = try db.exec("SELECT name FROM events WHERE dt >= CAST('2024-06-01' AS DATE) ORDER BY dt");
+    var r = try db.exec(
+        "SELECT name FROM events WHERE dt >= CAST('2024-06-01' AS DATE) ORDER BY dt",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -25224,7 +27431,9 @@ test "INTERVAL type: date plus interval in table" {
     defer cleanupTestDb(&db, path);
 
     _ = try db.exec("CREATE TABLE deadlines (start_date DATE, offset INTERVAL)");
-    _ = try db.exec("INSERT INTO deadlines VALUES (CAST('2024-01-01' AS DATE), CAST('30 days' AS INTERVAL))");
+    _ = try db.exec(
+        "INSERT INTO deadlines VALUES (CAST('2024-01-01' AS DATE), CAST('30 days' AS INTERVAL))",
+    );
 
     var r = try db.exec("SELECT CAST(start_date + offset AS TEXT) FROM deadlines");
     defer r.close(testing.allocator);
@@ -25234,7 +27443,7 @@ test "INTERVAL type: date plus interval in table" {
     try testing.expectEqualStrings("2024-01-31", row1.values[0].text);
 }
 
-// ── ENUM Type Tests ─────────────────────────────────────────────────────
+// ── ENUM Type Tests ────────────────────────
 
 test "CREATE TYPE AS ENUM basic" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -25344,7 +27553,10 @@ test "CREATE DOMAIN basic" {
     try testing.expectEqualStrings("CREATE DOMAIN", r.message);
 
     // Verify the domain was persisted: creating a duplicate must fail
-    try testing.expectError(error.TableAlreadyExists, db.exec("CREATE DOMAIN positive_int AS TEXT"));
+    try testing.expectError(
+        error.TableAlreadyExists,
+        db.exec("CREATE DOMAIN positive_int AS TEXT"),
+    );
 }
 
 test "CREATE DOMAIN without constraint" {
@@ -25434,7 +27646,11 @@ test "DROP DOMAIN nonexistent error" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_domain_drop_nonexistent.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_domain_drop_nonexistent.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -25581,7 +27797,7 @@ test "ALL with comparison operators" {
     try testing.expect(!row2.values[0].boolean);
 }
 
-// ── unnest() Table Function Tests ──────────────────────────────────
+// ── unnest() Table Function Tests ────────────────────
 
 test "unnest() with integer array" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -25736,7 +27952,7 @@ test "unnest() with ORDER BY" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
-// ── WITH ORDINALITY Table Function Tests ──────────────────────────────────────
+// ── WITH ORDINALITY Table Function Tests ─────────────────
 
 test "unnest() WITH ORDINALITY — integer array, default column names" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -25771,7 +27987,9 @@ test "unnest() WITH ORDINALITY AS t(val, ord) — column aliases" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT val, ord FROM unnest(ARRAY[100, 200]) WITH ORDINALITY AS t(val, ord)");
+    var r = try db.exec(
+        "SELECT val, ord FROM unnest(ARRAY[100, 200]) WITH ORDINALITY AS t(val, ord)",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -25792,7 +28010,10 @@ test "unnest() WITH ORDINALITY — text array" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT val, ord FROM unnest(ARRAY['apple', 'banana', 'cherry']) WITH ORDINALITY AS t(val, ord)");
+    var r = try db.exec(
+        "SELECT val, ord FROM unnest(ARRAY['apple', 'banana', 'cherry']) WITH ORDINALITY " ++
+            "AS t(val, ord)",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -25856,7 +28077,10 @@ test "unnest() WITH ORDINALITY — WHERE filter on ordinality column" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT val, ord FROM unnest(ARRAY[10, 20, 30, 40, 50]) WITH ORDINALITY AS t(val, ord) WHERE ord > 2");
+    var r = try db.exec(
+        "SELECT val, ord FROM unnest(ARRAY[10, 20, 30, 40, 50]) WITH ORDINALITY AS " ++
+            "t(val, ord) WHERE ord > 2",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -25882,7 +28106,10 @@ test "unnest() WITH ORDINALITY — ORDER BY ordinality DESC reverses output" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT val FROM unnest(ARRAY[10, 20, 30]) WITH ORDINALITY AS t(val, ord) ORDER BY ord DESC");
+    var r = try db.exec(
+        "SELECT val FROM unnest(ARRAY[10, 20, 30]) WITH ORDINALITY AS t(val, ord) ORDER " ++
+            "BY ord DESC",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -25963,7 +28190,10 @@ test "json_array_elements() WITH ORDINALITY" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT val, ord FROM json_array_elements('[\"a\",\"b\",\"c\"]') WITH ORDINALITY AS t(val, ord)");
+    var r = try db.exec(
+        "SELECT val, ord FROM json_array_elements('[\"a\",\"b\",\"c\"]') WITH ORDINALITY " ++
+            "AS t(val, ord)",
+    );
     defer r.close(testing.allocator);
 
     var row1 = (try r.rows.?.next()).?;
@@ -26184,7 +28414,10 @@ test "ts_headline: basic usage" {
     defer row.deinit();
 
     try testing.expect(row.values[0] == .text);
-    try testing.expectEqualStrings("The quick brown <b>fox</b> jumps over the lazy dog", row.values[0].text);
+    try testing.expectEqualStrings(
+        "The quick brown <b>fox</b> jumps over the lazy dog",
+        row.values[0].text,
+    );
 }
 
 test "ts_headline: multiple query terms" {
@@ -26244,7 +28477,7 @@ test "ts_headline: no match" {
 //     defer row.deinit();
 //
 //     try testing.expectEqual(@as(i64, 1), row.values[0].integer);
-//     try testing.expectEqualStrings("PostgreSQL is a powerful <b>database</b>", row.values[1].text);
+// try testing.expectEqualStrings("PostgreSQL is a powerful <b>database</b>", row.values[1].text);
 // }
 
 test "SELECT division by zero: proper cleanup with defer" {
@@ -26263,7 +28496,7 @@ test "SELECT division by zero: proper cleanup with defer" {
     // Test passes — arena is properly freed via defer
 }
 
-// ── Stabilization: Additional Edge Case Tests ───────────────────────────
+// ── Stabilization: Additional Edge Case Tests ────────────────
 
 test "edge case: multiple ORDER BY columns with mixed ASC/DESC" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -26298,7 +28531,9 @@ test "edge case: multiple ORDER BY columns with mixed ASC/DESC" {
     var row2 = (try r.rows.?.next()).?;
     defer row2.deinit();
     const second_name = row2.values[0].text;
-    try testing.expect(std.mem.eql(u8, second_name, "Alice") or std.mem.eql(u8, second_name, "Bob"));
+    try testing.expect(
+        std.mem.eql(u8, second_name, "Alice") or std.mem.eql(u8, second_name, "Bob"),
+    );
     try testing.expect(!std.mem.eql(u8, first_name, second_name)); // Different names
 
     var row3 = (try r.rows.?.next()).?;
@@ -26401,7 +28636,11 @@ test "SQL function with expression body evaluates correctly (named parameter)" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_sql_function_expression.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_sql_function_expression.db",
+        .{dir_path},
+    );
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
@@ -26437,7 +28676,11 @@ test "SQL function with $1 positional parameter evaluates correctly" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_sql_function_dollar_param.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_sql_function_dollar_param.db",
+        .{dir_path},
+    );
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
@@ -26569,7 +28812,8 @@ test "SQL function in ORDER BY clause affects sort order" {
         defer row.deinit();
         switch (row.values[0]) {
             .integer => |v| ids.append(testing.allocator, v) catch unreachable,
-            else => ids.append(testing.allocator, -999) catch unreachable, // Sentinel for non-integer
+            // Sentinel for non-integer
+            else => ids.append(testing.allocator, -999) catch unreachable,
         }
     }
 
@@ -26595,7 +28839,7 @@ test "SQL function in ORDER BY clause affects sort order" {
 //   - Catalog threading through FilterOp, SortOp operators
 //   - Type conversion from evaluated result to proper Value variant
 
-// ── Milestone 14H: Trigger Engine Integration Tests ───────────────────
+// ── Milestone 14H: Trigger Engine Integration Tests ──────────────
 
 test "CREATE TRIGGER and DROP TRIGGER integration" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -26750,7 +28994,7 @@ test "CREATE TRIGGER with different timings" {
     try testing.expectEqualStrings("CREATE TRIGGER", result3.message);
 }
 
-// ── Role Management Tests ───────────────────────────────────────────
+// ── Role Management Tests ──────────────────────
 
 test "CREATE ROLE and DROP ROLE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -27080,17 +29324,24 @@ test "CREATE POLICY and DROP POLICY basic" {
     defer db.close();
 
     // CREATE POLICY for SELECT
-    var r1 = try db.execSQL("CREATE POLICY view_policy ON users FOR SELECT USING (id = current_user_id());");
+    var r1 = try db.execSQL(
+        "CREATE POLICY view_policy ON users FOR SELECT USING (id = current_user_id());",
+    );
     defer r1.close(allocator);
     try std.testing.expectEqualStrings("CREATE POLICY", r1.message);
 
     // CREATE POLICY PERMISSIVE
-    var r2 = try db.execSQL("CREATE POLICY allow_read ON data AS PERMISSIVE FOR SELECT USING (public = true);");
+    var r2 = try db.execSQL(
+        "CREATE POLICY allow_read ON data AS PERMISSIVE FOR SELECT USING (public = true);",
+    );
     defer r2.close(allocator);
     try std.testing.expectEqualStrings("CREATE POLICY", r2.message);
 
     // CREATE POLICY INSERT with WITH CHECK
-    var r3 = try db.execSQL("CREATE POLICY insert_check ON posts FOR INSERT WITH CHECK (author_id = current_user_id());");
+    var r3 = try db.execSQL(
+        "CREATE POLICY insert_check ON posts FOR INSERT WITH CHECK (author_id = " ++
+            "current_user_id());",
+    );
     defer r3.close(allocator);
     try std.testing.expectEqualStrings("CREATE POLICY", r3.message);
 
@@ -27162,7 +29413,10 @@ test "CREATE POLICY UPDATE with both USING and WITH CHECK" {
     defer db.close();
 
     // CREATE POLICY UPDATE with both clauses
-    var r1 = try db.execSQL("CREATE POLICY update_own ON comments FOR UPDATE USING (user_id = current_user()) WITH CHECK (user_id = current_user());");
+    var r1 = try db.execSQL(
+        "CREATE POLICY update_own ON comments FOR UPDATE USING (user_id = " ++
+            "current_user()) WITH CHECK (user_id = current_user());",
+    );
     defer r1.close(allocator);
     try std.testing.expectEqualStrings("CREATE POLICY", r1.message);
 }
@@ -27194,7 +29448,10 @@ test "Hot standby prevents INSERT" {
     defer db.close();
 
     // INSERT should fail in hot standby
-    try std.testing.expectError(EngineError.TransactionError, db.execSQL("INSERT INTO users VALUES (1, 'Alice');"));
+    try std.testing.expectError(
+        EngineError.TransactionError,
+        db.execSQL("INSERT INTO users VALUES (1, 'Alice');"),
+    );
 }
 
 test "Hot standby prevents UPDATE" {
@@ -27222,7 +29479,10 @@ test "Hot standby prevents UPDATE" {
     defer db.close();
 
     // UPDATE should fail in hot standby
-    try std.testing.expectError(EngineError.TransactionError, db.execSQL("UPDATE users SET name = 'Bob' WHERE id = 1;"));
+    try std.testing.expectError(
+        EngineError.TransactionError,
+        db.execSQL("UPDATE users SET name = 'Bob' WHERE id = 1;"),
+    );
 }
 
 test "Hot standby prevents DELETE" {
@@ -27250,7 +29510,10 @@ test "Hot standby prevents DELETE" {
     defer db.close();
 
     // DELETE should fail in hot standby
-    try std.testing.expectError(EngineError.TransactionError, db.execSQL("DELETE FROM users WHERE id = 1;"));
+    try std.testing.expectError(
+        EngineError.TransactionError,
+        db.execSQL("DELETE FROM users WHERE id = 1;"),
+    );
 }
 
 test "Hot standby prevents DROP TABLE" {
@@ -27339,7 +29602,10 @@ test "Hot standby prevents CREATE TABLE" {
     defer db.close();
 
     // CREATE TABLE should fail in hot standby
-    try std.testing.expectError(EngineError.TransactionError, db.execSQL("CREATE TABLE new_table (id INTEGER, name TEXT);"));
+    try std.testing.expectError(
+        EngineError.TransactionError,
+        db.execSQL("CREATE TABLE new_table (id INTEGER, name TEXT);"),
+    );
 
     // Verify we can still SELECT from existing table
     var r_select = try db.execSQL("SELECT * FROM initial_table;");
@@ -27470,7 +29736,7 @@ test "ANALYZE all tables" {
     try std.testing.expectEqual(@as(u64, 3), t2_stats.row_count);
 }
 
-// ── Histogram Generation Tests (Milestone 20B) ──────────────────────────────
+// ── Histogram Generation Tests (Milestone 20B) ───────────────
 
 test "ANALYZE generates histogram with basic values" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -27922,7 +30188,9 @@ test "ANALYZE histogram on TEXT column" {
     defer r1.close(allocator);
 
     // Insert text values
-    var r2 = try db.execSQL("INSERT INTO t VALUES ('alice'), ('bob'), ('charlie'), ('dave'), ('eve');");
+    var r2 = try db.execSQL(
+        "INSERT INTO t VALUES ('alice'), ('bob'), ('charlie'), ('dave'), ('eve');",
+    );
     defer r2.close(allocator);
 
     // Run ANALYZE
@@ -27954,7 +30222,7 @@ test "ANALYZE histogram on TEXT column" {
     try std.testing.expectEqual(@as(u64, 5), total_count);
 }
 
-// ── Comprehensive Edge Case Tests for ANALYZE ──────────────────────
+// ── Comprehensive Edge Case Tests for ANALYZE ────────────────
 
 test "ANALYZE calculates correlation with physical row order" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -27979,7 +30247,11 @@ test "ANALYZE calculates correlation with physical row order" {
         // Insert values in ascending order: 1, 2, 3, ..., 20
         var i: u64 = 1;
         while (i <= 20) : (i += 1) {
-            const query = try std.fmt.allocPrint(allocator, "INSERT INTO t_ordered VALUES ({});", .{i});
+            const query = try std.fmt.allocPrint(
+                allocator,
+                "INSERT INTO t_ordered VALUES ({});",
+                .{i},
+            );
             defer allocator.free(query);
             var r = try db.execSQL(query);
             defer r.close(allocator);
@@ -28011,7 +30283,11 @@ test "ANALYZE calculates correlation with physical row order" {
         // Insert values in descending order: 20, 19, 18, ..., 1
         var i: u64 = 20;
         while (i >= 1) : (i -= 1) {
-            const query = try std.fmt.allocPrint(allocator, "INSERT INTO t_reverse VALUES ({});", .{i});
+            const query = try std.fmt.allocPrint(
+                allocator,
+                "INSERT INTO t_reverse VALUES ({});",
+                .{i},
+            );
             defer allocator.free(query);
             var r = try db.execSQL(query);
             defer r.close(allocator);
@@ -28042,9 +30318,34 @@ test "ANALYZE calculates correlation with physical row order" {
         defer r1.close(allocator);
 
         // Insert values in pseudo-random order: alternate high/low
-        const random_order = [_]u64{ 15, 3, 18, 7, 1, 12, 9, 20, 4, 16, 6, 13, 2, 19, 8, 11, 5, 14, 10, 17 };
+        const random_order = [_]u64{
+            15,
+            3,
+            18,
+            7,
+            1,
+            12,
+            9,
+            20,
+            4,
+            16,
+            6,
+            13,
+            2,
+            19,
+            8,
+            11,
+            5,
+            14,
+            10,
+            17,
+        };
         for (random_order) |val| {
-            const query = try std.fmt.allocPrint(allocator, "INSERT INTO t_random VALUES ({});", .{val});
+            const query = try std.fmt.allocPrint(
+                allocator,
+                "INSERT INTO t_random VALUES ({});",
+                .{val},
+            );
             defer allocator.free(query);
             var r = try db.execSQL(query);
             defer r.close(allocator);
@@ -28150,7 +30451,11 @@ test "ANALYZE with very large dataset (stress test)" {
     // Insert 10,000 rows to stress test statistics collection
     var i: u64 = 0;
     while (i < 10000) : (i += 1) {
-        const query = try std.fmt.allocPrint(allocator, "INSERT INTO large_data VALUES ({}, {});", .{ i, i % 1000 });
+        const query = try std.fmt.allocPrint(
+            allocator,
+            "INSERT INTO large_data VALUES ({}, {});",
+            .{ i, i % 1000 },
+        );
         defer allocator.free(query);
         var r = try db.execSQL(query);
         defer r.close(allocator);
@@ -28266,7 +30571,11 @@ test "ANALYZE on multi-column table (independent statistics)" {
     // Insert 50 rows with different distributions per column
     var i: u64 = 0;
     while (i < 50) : (i += 1) {
-        const query = try std.fmt.allocPrint(allocator, "INSERT INTO multicol VALUES ({}, 'text{}', {});", .{ i, i % 5, i * 2 });
+        const query = try std.fmt.allocPrint(
+            allocator,
+            "INSERT INTO multicol VALUES ({}, 'text{}', {});",
+            .{ i, i % 5, i * 2 },
+        );
         defer allocator.free(query);
         var r = try db.execSQL(query);
         defer r.close(allocator);
@@ -28467,7 +30776,10 @@ test "EXPLAIN with JOIN" {
     _ = try db.execSQL("CREATE TABLE IF NOT EXISTS explain_test_2 (id INTEGER)");
     _ = try db.execSQL("CREATE TABLE IF NOT EXISTS explain_test_3 (user_id INTEGER)");
 
-    var result = try db.execSQL("EXPLAIN SELECT * FROM explain_test_2 JOIN explain_test_3 ON explain_test_2.id = explain_test_3.user_id");
+    var result = try db.execSQL(
+        "EXPLAIN SELECT * FROM explain_test_2 JOIN explain_test_3 ON explain_test_2.id = " ++
+            "explain_test_3.user_id",
+    );
     defer result.close(allocator);
 
     try std.testing.expect(result.message.len > 0);
@@ -28493,7 +30805,7 @@ test "EXPLAIN ANALYZE SELECT" {
     try std.testing.expect(std.mem.indexOf(u8, result.message, "ANALYZE") != null);
 }
 
-// ── Comprehensive Edge Case Tests for EXPLAIN ──────────────────────────
+// ── Comprehensive Edge Case Tests for EXPLAIN ────────────────
 
 test "EXPLAIN edge case: aggregation with GROUP BY" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -28518,7 +30830,9 @@ test "EXPLAIN edge case: window function" {
 
     _ = try db.execSQL("CREATE TABLE IF NOT EXISTS scores (player TEXT, score INTEGER)");
 
-    var result = try db.execSQL("EXPLAIN SELECT player, ROW_NUMBER() OVER (ORDER BY score DESC) FROM scores");
+    var result = try db.execSQL(
+        "EXPLAIN SELECT player, ROW_NUMBER() OVER (ORDER BY score DESC) FROM scores",
+    );
     defer result.close(allocator);
 
     try std.testing.expect(result.message.len > 0);
@@ -28533,7 +30847,10 @@ test "EXPLAIN edge case: CTE (WITH clause)" {
 
     _ = try db.execSQL("CREATE TABLE IF NOT EXISTS products (id INTEGER, price INTEGER)");
 
-    var result = try db.execSQL("EXPLAIN WITH expensive AS (SELECT * FROM products WHERE price > 1000) SELECT * FROM expensive");
+    var result = try db.execSQL(
+        "EXPLAIN WITH expensive AS (SELECT * FROM products WHERE price > 1000) SELECT * " ++
+            "FROM expensive",
+    );
     defer result.close(allocator);
 
     try std.testing.expect(result.message.len > 0);
@@ -28583,7 +30900,10 @@ test "EXPLAIN edge case: LEFT JOIN with filter" {
     _ = try db.execSQL("CREATE TABLE IF NOT EXISTS customers (id INTEGER, name TEXT)");
     _ = try db.execSQL("CREATE TABLE IF NOT EXISTS invoices (customer_id INTEGER, amount INTEGER)");
 
-    var result = try db.execSQL("EXPLAIN SELECT * FROM customers LEFT JOIN invoices ON customers.id = invoices.customer_id WHERE amount > 100");
+    var result = try db.execSQL(
+        "EXPLAIN SELECT * FROM customers LEFT JOIN invoices ON customers.id = " ++
+            "invoices.customer_id WHERE amount > 100",
+    );
     defer result.close(allocator);
 
     try std.testing.expect(result.message.len > 0);
@@ -28627,7 +30947,9 @@ test "EXPLAIN ANALYZE edge case: multiple aggregates" {
     _ = try db.execSQL("CREATE TABLE IF NOT EXISTS metrics (value INTEGER)");
     _ = try db.execSQL("INSERT INTO metrics VALUES (10), (20), (30)");
 
-    var result = try db.execSQL("EXPLAIN ANALYZE SELECT COUNT(*), SUM(value), AVG(value) FROM metrics");
+    var result = try db.execSQL(
+        "EXPLAIN ANALYZE SELECT COUNT(*), SUM(value), AVG(value) FROM metrics",
+    );
     defer result.close(allocator);
 
     try std.testing.expect(result.message.len > 0);
@@ -28642,10 +30964,14 @@ test "SQL function NULLIF integration" {
     defer db.close();
 
     _ = try db.execSQL("CREATE TABLE IF NOT EXISTS nullif_test (a INTEGER, b INTEGER, name TEXT)");
-    _ = try db.execSQL("INSERT INTO nullif_test VALUES (1, 1, 'same'), (1, 2, 'diff'), (NULL, 5, 'null_a')");
+    _ = try db.execSQL(
+        "INSERT INTO nullif_test VALUES (1, 1, 'same'), (1, 2, 'diff'), (NULL, 5, 'null_a')",
+    );
 
     // NULLIF with equal values returns NULL
-    var result1 = try db.execSQL("SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'same'");
+    var result1 = try db.execSQL(
+        "SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'same'",
+    );
     defer result1.close(allocator);
     var row1 = (try result1.rows.?.next()).?;
     defer row1.deinit();
@@ -28653,7 +30979,9 @@ test "SQL function NULLIF integration" {
     try std.testing.expect(val1 == .null_value);
 
     // NULLIF with different values returns first value
-    var result2 = try db.execSQL("SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'diff'");
+    var result2 = try db.execSQL(
+        "SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'diff'",
+    );
     defer result2.close(allocator);
     var row2 = (try result2.rows.?.next()).?;
     defer row2.deinit();
@@ -28661,7 +30989,9 @@ test "SQL function NULLIF integration" {
     try std.testing.expectEqual(@as(i64, 1), val2.integer);
 
     // NULLIF with NULL first arg (NULL is not equal to anything)
-    var result3 = try db.execSQL("SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'null_a'");
+    var result3 = try db.execSQL(
+        "SELECT NULLIF(a, b) as result FROM nullif_test WHERE name = 'null_a'",
+    );
     defer result3.close(allocator);
     var row3 = (try result3.rows.?.next()).?;
     defer row3.deinit();
@@ -28675,11 +31005,17 @@ test "SQL function GREATEST integration" {
     var db = try Database.open(allocator, ":memory:", .{});
     defer db.close();
 
-    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS greatest_test (a INTEGER, b INTEGER, c INTEGER)");
-    _ = try db.execSQL("INSERT INTO greatest_test VALUES (1, 2, 3), (5, NULL, 2), (NULL, NULL, NULL)");
+    _ = try db.execSQL(
+        "CREATE TABLE IF NOT EXISTS greatest_test (a INTEGER, b INTEGER, c INTEGER)",
+    );
+    _ = try db.execSQL(
+        "INSERT INTO greatest_test VALUES (1, 2, 3), (5, NULL, 2), (NULL, NULL, NULL)",
+    );
 
     // GREATEST with all values present
-    var result1 = try db.execSQL("SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a = 1");
+    var result1 = try db.execSQL(
+        "SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a = 1",
+    );
     defer result1.close(allocator);
     var row1 = (try result1.rows.?.next()).?;
     defer row1.deinit();
@@ -28687,7 +31023,9 @@ test "SQL function GREATEST integration" {
     try std.testing.expectEqual(@as(i64, 3), val1.integer);
 
     // GREATEST with NULLs (NULLs are ignored)
-    var result2 = try db.execSQL("SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a = 5");
+    var result2 = try db.execSQL(
+        "SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a = 5",
+    );
     defer result2.close(allocator);
     var row2 = (try result2.rows.?.next()).?;
     defer row2.deinit();
@@ -28695,7 +31033,9 @@ test "SQL function GREATEST integration" {
     try std.testing.expectEqual(@as(i64, 5), val2.integer);
 
     // GREATEST with all NULLs returns NULL
-    var result3 = try db.execSQL("SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a IS NULL AND b IS NULL");
+    var result3 = try db.execSQL(
+        "SELECT GREATEST(a, b, c) as result FROM greatest_test WHERE a IS NULL AND b IS NULL",
+    );
     defer result3.close(allocator);
     var row3 = (try result3.rows.?.next()).?;
     defer row3.deinit();
@@ -28737,7 +31077,9 @@ test "SQL function LEAST integration" {
     try std.testing.expectEqual(@as(i64, 2), val2.integer);
 
     // LEAST with all NULLs returns NULL
-    var result3 = try db.execSQL("SELECT LEAST(a, b, c) as result FROM least_test WHERE a IS NULL AND b IS NULL");
+    var result3 = try db.execSQL(
+        "SELECT LEAST(a, b, c) as result FROM least_test WHERE a IS NULL AND b IS NULL",
+    );
     defer result3.close(allocator);
     var row3 = (try result3.rows.?.next()).?;
     defer row3.deinit();
@@ -28759,11 +31101,15 @@ test "SQL function COALESCE integration" {
     var db = try Database.open(allocator, ":memory:", .{});
     defer db.close();
 
-    _ = try db.execSQL("CREATE TABLE IF NOT EXISTS coalesce_test (a INTEGER, b INTEGER, c INTEGER)");
+    _ = try db.execSQL(
+        "CREATE TABLE IF NOT EXISTS coalesce_test (a INTEGER, b INTEGER, c INTEGER)",
+    );
     _ = try db.execSQL("INSERT INTO coalesce_test VALUES (NULL, NULL, 3), (NULL, 2, 3), (1, 2, 3)");
 
     // COALESCE returns first non-NULL (third column)
-    var result1 = try db.execSQL("SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a IS NULL AND b IS NULL");
+    var result1 = try db.execSQL(
+        "SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a IS NULL AND b IS NULL",
+    );
     defer result1.close(allocator);
     var row1 = (try result1.rows.?.next()).?;
     defer row1.deinit();
@@ -28771,7 +31117,9 @@ test "SQL function COALESCE integration" {
     try std.testing.expectEqual(@as(i64, 3), val1.integer);
 
     // COALESCE returns first non-NULL (second column)
-    var result2 = try db.execSQL("SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a IS NULL AND b = 2");
+    var result2 = try db.execSQL(
+        "SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a IS NULL AND b = 2",
+    );
     defer result2.close(allocator);
     var row2 = (try result2.rows.?.next()).?;
     defer row2.deinit();
@@ -28779,7 +31127,9 @@ test "SQL function COALESCE integration" {
     try std.testing.expectEqual(@as(i64, 2), val2.integer);
 
     // COALESCE returns first non-NULL (first column)
-    var result3 = try db.execSQL("SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a = 1");
+    var result3 = try db.execSQL(
+        "SELECT COALESCE(a, b, c) as result FROM coalesce_test WHERE a = 1",
+    );
     defer result3.close(allocator);
     var row3 = (try result3.rows.?.next()).?;
     defer row3.deinit();
@@ -28979,7 +31329,11 @@ test "CREATE INDEX USING HASH parses successfully" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_hash_idx_parse.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_create_hash_idx_parse.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29003,7 +31357,11 @@ test "CREATE INDEX USING HASH stores hash index in catalog" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_hash_idx_catalog.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_create_hash_idx_catalog.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29034,7 +31392,11 @@ test "CREATE UNIQUE INDEX USING HASH creates unique hash index" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_unique_hash_idx.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_create_unique_hash_idx.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29043,7 +31405,9 @@ test "CREATE UNIQUE INDEX USING HASH creates unique hash index" {
     defer r1.close(testing.allocator);
 
     // Create unique hash index
-    var r2 = try db.execSQL("CREATE UNIQUE INDEX idx_accounts_username ON accounts (username) USING HASH");
+    var r2 = try db.execSQL(
+        "CREATE UNIQUE INDEX idx_accounts_username ON accounts (username) USING HASH",
+    );
     defer r2.close(testing.allocator);
 
     try testing.expectEqualStrings("CREATE INDEX", r2.message);
@@ -29065,7 +31429,11 @@ test "CREATE INDEX USING BTREE is default if USING clause omitted" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_btree_default.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_create_btree_default.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29096,7 +31464,11 @@ test "CREATE INDEX USING HASH with INCLUDE clause" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_hash_idx_include.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_create_hash_idx_include.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29105,7 +31477,9 @@ test "CREATE INDEX USING HASH with INCLUDE clause" {
     defer r1.close(testing.allocator);
 
     // Create hash index with INCLUDE clause
-    var r2 = try db.execSQL("CREATE INDEX idx_orders_customer ON orders (customer_id) INCLUDE (status) USING HASH");
+    var r2 = try db.execSQL(
+        "CREATE INDEX idx_orders_customer ON orders (customer_id) INCLUDE (status) USING HASH",
+    );
     defer r2.close(testing.allocator);
 
     try testing.expectEqualStrings("CREATE INDEX", r2.message);
@@ -29203,7 +31577,11 @@ test "Hash index rejects range queries and falls back to seq scan" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_hash_idx_range_reject.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_hash_idx_range_reject.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29211,7 +31589,9 @@ test "Hash index rejects range queries and falls back to seq scan" {
     var r1 = try db.execSQL("CREATE TABLE transactions (id INTEGER PRIMARY KEY, amount INTEGER)");
     defer r1.close(testing.allocator);
 
-    var r2 = try db.execSQL("CREATE INDEX idx_transactions_amount ON transactions (amount) USING HASH");
+    var r2 = try db.execSQL(
+        "CREATE INDEX idx_transactions_amount ON transactions (amount) USING HASH",
+    );
     defer r2.close(testing.allocator);
 
     // Insert test data
@@ -29326,7 +31706,11 @@ test "CREATE INDEX USING HASH IF NOT EXISTS" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_create_hash_idx_ine.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_create_hash_idx_ine.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29362,7 +31746,9 @@ test "Hash index with NULL values in indexed column" {
     var r1 = try db.execSQL("CREATE TABLE records (id INTEGER PRIMARY KEY, optional_field TEXT)");
     defer r1.close(testing.allocator);
 
-    var r2 = try db.execSQL("CREATE INDEX idx_records_field ON records (optional_field) USING HASH");
+    var r2 = try db.execSQL(
+        "CREATE INDEX idx_records_field ON records (optional_field) USING HASH",
+    );
     defer r2.close(testing.allocator);
 
     // Insert row with NULL value - hash index should handle it
@@ -29405,7 +31791,7 @@ test "Hash index error when no column specified in CREATE INDEX" {
     }
 }
 
-// ── CREATE INDEX CONCURRENTLY tests ────────────────────────────────────
+// ── CREATE INDEX CONCURRENTLY tests ───────────────────
 
 test "Parse CREATE INDEX CONCURRENTLY basic syntax" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -29416,7 +31802,11 @@ test "Parse CREATE INDEX CONCURRENTLY basic syntax" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_parse_concurrent_idx.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_parse_concurrent_idx.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29444,7 +31834,11 @@ test "Create index concurrently on empty table starts in building state" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_empty_table.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_concurrent_empty_table.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29470,7 +31864,11 @@ test "Create unique index concurrently should mark as unique" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_unique_concurrent_idx.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_unique_concurrent_idx.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29495,7 +31893,11 @@ test "Create index concurrently with IF NOT EXISTS" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_if_not_exists.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_concurrent_if_not_exists.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29556,7 +31958,9 @@ test "Create index concurrently with INCLUDE clause" {
     defer r1.close(testing.allocator);
 
     // Create index concurrently with INCLUDE clause
-    var r2 = try db.execSQL("CREATE INDEX CONCURRENTLY idx_email_covering ON users (email) INCLUDE (name)");
+    var r2 = try db.execSQL(
+        "CREATE INDEX CONCURRENTLY idx_email_covering ON users (email) INCLUDE (name)",
+    );
     defer r2.close(testing.allocator);
 
     try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
@@ -29571,16 +31975,24 @@ test "Create unique index concurrently with multiple columns" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_concurrent_multi_col.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_concurrent_multi_col.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table
-    var r1 = try db.execSQL("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, order_date TEXT)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, order_date TEXT)",
+    );
     defer r1.close(testing.allocator);
 
     // Create index concurrently on multiple columns
-    var r2 = try db.execSQL("CREATE UNIQUE INDEX CONCURRENTLY idx_user_date ON orders (user_id, order_date)");
+    var r2 = try db.execSQL(
+        "CREATE UNIQUE INDEX CONCURRENTLY idx_user_date ON orders (user_id, order_date)",
+    );
     defer r2.close(testing.allocator);
 
     try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
@@ -29651,7 +32063,11 @@ test "Second create index concurrently on same name fails" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_duplicate_concurrent_idx.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_duplicate_concurrent_idx.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29683,7 +32099,11 @@ test "Create unique index concurrently with hash type" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_unique_concurrent_hash.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_unique_concurrent_hash.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29692,13 +32112,15 @@ test "Create unique index concurrently with hash type" {
     defer r1.close(testing.allocator);
 
     // Create unique index concurrently with hash type
-    var r2 = try db.execSQL("CREATE UNIQUE INDEX CONCURRENTLY idx_email_hash ON users (email) USING hash");
+    var r2 = try db.execSQL(
+        "CREATE UNIQUE INDEX CONCURRENTLY idx_email_hash ON users (email) USING hash",
+    );
     defer r2.close(testing.allocator);
 
     try testing.expectEqualStrings("CREATE INDEX CONCURRENTLY", r2.message);
 }
 
-// ── REINDEX tests ──────────────────────────────────────────────────────
+// ── REINDEX tests ─────────────────────────
 
 test "REINDEX INDEX rebuilds a btree index" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -29815,7 +32237,9 @@ test "REINDEX TABLE rebuilds all indexes on a table" {
     defer cleanupTestDb(&db, path);
 
     // Create table with multiple indexes
-    var r1 = try db.execSQL("CREATE TABLE accounts (id INTEGER PRIMARY KEY, username TEXT, email TEXT)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, username TEXT, email TEXT)",
+    );
     defer r1.close(testing.allocator);
 
     var r2 = try db.execSQL("CREATE INDEX idx_accounts_username ON accounts (username)");
@@ -29825,7 +32249,9 @@ test "REINDEX TABLE rebuilds all indexes on a table" {
     defer r3.close(testing.allocator);
 
     // Insert data (one row at a time for compatibility)
-    var r4 = try db.execSQL("INSERT INTO accounts (id, username, email) VALUES (1, 'alice', 'alice@example.com')");
+    var r4 = try db.execSQL(
+        "INSERT INTO accounts (id, username, email) VALUES (1, 'alice', 'alice@example.com')",
+    );
     defer r4.close(testing.allocator);
 
     // REINDEX TABLE should rebuild all indexes
@@ -29942,7 +32368,11 @@ test "REINDEX TABLE on nonexistent table fails" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_table_noexist.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_reindex_table_noexist.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -29960,7 +32390,11 @@ test "REINDEX TABLE on table without indexes succeeds" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_table_no_idx.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_reindex_table_no_idx.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30017,7 +32451,11 @@ test "REINDEX INDEX preserves index type" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_preserve_type.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_reindex_preserve_type.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30049,7 +32487,11 @@ test "REINDEX INDEX preserves UNIQUE constraint" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_reindex_preserve_unique.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_reindex_preserve_unique.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30111,7 +32553,7 @@ test "REINDEX INDEX on invalid index state" {
     try testing.expectEqualStrings("REINDEX", r3.message);
 }
 
-// ── Column-level UNIQUE Constraint Tests ────────────────────────────────
+// ── Column-level UNIQUE Constraint Tests ─────────────────
 // GitHub issue #126: Column-level UNIQUE constraints should auto-create an index
 
 test "Column-level UNIQUE constraint is enforced on duplicate INSERT" {
@@ -30201,7 +32643,7 @@ test "Column-level UNIQUE constraint allows distinct non-duplicate values" {
     try testing.expectEqual(@as(i64, 3), row.values[0].toInteger().?);
 }
 
-// ── PreparedStatement Tests ─────────────────────────────────────────────
+// ── PreparedStatement Tests ──────────────────────
 
 test "prepared stmt: basic prepare and execute SELECT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -30220,7 +32662,9 @@ test "prepared stmt: basic prepare and execute SELECT" {
     // Setup test table
     var r1 = try db.execSQL("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO test (id, name) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')");
+    var r2 = try db.execSQL(
+        "INSERT INTO test (id, name) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')",
+    );
     defer r2.close(testing.allocator);
 
     // Prepare statement
@@ -30265,7 +32709,10 @@ test "prepared stmt: bind multiple parameters INSERT" {
     defer r1.close(testing.allocator);
 
     // Prepare INSERT statement with multiple parameters
-    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, name, score) VALUES (?, ?, ?)");
+    var stmt = try db.prepare(
+        testing.allocator,
+        "INSERT INTO test (id, name, score) VALUES (?, ?, ?)",
+    );
     defer stmt.close();
 
     // Bind parameters
@@ -30342,14 +32789,21 @@ test "prepared stmt: SELECT with repeated execution" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_select_repeated.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_prepared_select_repeated.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Setup test data
     var r1 = try db.execSQL("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO test (id, name) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie'), (4, 'David'), (5, 'Eve')");
+    var r2 = try db.execSQL(
+        "INSERT INTO test (id, name) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie'), " ++
+            "(4, 'David'), (5, 'Eve')",
+    );
     defer r2.close(testing.allocator);
 
     // Prepare SELECT statement once
@@ -30368,7 +32822,10 @@ test "prepared stmt: SELECT with repeated execution" {
         try testing.expect(row_opt != null);
         var row = row_opt.?;
         defer row.deinit();
-        try testing.expectEqualStrings(expected_names[@as(usize, @intCast(id - 1))], row.values[0].text);
+        try testing.expectEqualStrings(
+            expected_names[@as(usize, @intCast(id - 1))],
+            row.values[0].text,
+        );
     }
 }
 
@@ -30391,7 +32848,10 @@ test "prepared stmt: NULL parameter binding" {
     defer r1.close(testing.allocator);
 
     // Prepare INSERT with NULL parameter
-    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, optional_text) VALUES (?, ?)");
+    var stmt = try db.prepare(
+        testing.allocator,
+        "INSERT INTO test (id, optional_text) VALUES (?, ?)",
+    );
     defer stmt.close();
 
     // Bind NULL value
@@ -30427,11 +32887,17 @@ test "prepared stmt: all parameter types" {
     defer cleanupTestDb(&db, path);
 
     // Create table with multiple types
-    var r1 = try db.execSQL("CREATE TABLE test (id INTEGER PRIMARY KEY, int_col INTEGER, real_col REAL, text_col TEXT, bool_col BOOLEAN)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE test (id INTEGER PRIMARY KEY, int_col INTEGER, real_col REAL, " ++
+            "text_col TEXT, bool_col BOOLEAN)",
+    );
     defer r1.close(testing.allocator);
 
     // Prepare INSERT with multiple types
-    var stmt = try db.prepare(testing.allocator, "INSERT INTO test (id, int_col, real_col, text_col, bool_col) VALUES (?, ?, ?, ?, ?)");
+    var stmt = try db.prepare(
+        testing.allocator,
+        "INSERT INTO test (id, int_col, real_col, text_col, bool_col) VALUES (?, ?, ?, ?, ?)",
+    );
     defer stmt.close();
 
     // Bind various types
@@ -30446,7 +32912,9 @@ test "prepared stmt: all parameter types" {
     try testing.expectEqual(@as(u64, 1), result.rows_affected);
 
     // Verify all values
-    var verify = try db.execSQL("SELECT int_col, real_col, text_col, bool_col FROM test WHERE id = 1");
+    var verify = try db.execSQL(
+        "SELECT int_col, real_col, text_col, bool_col FROM test WHERE id = 1",
+    );
     defer verify.close(testing.allocator);
     const row_opt = try verify.rows.?.next();
     try testing.expect(row_opt != null);
@@ -30487,7 +32955,11 @@ test "prepared stmt: error on wrong parameter count" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_wrong_param_count.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_prepared_wrong_param_count.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -30605,15 +33077,23 @@ test "prepared stmt: complex SELECT with JOIN" {
     // Setup tables
     var r1 = try db.execSQL("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL)");
+    var r2 = try db.execSQL(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL)",
+    );
     defer r2.close(testing.allocator);
     var r3 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob')");
     defer r3.close(testing.allocator);
-    var r4 = try db.execSQL("INSERT INTO orders (id, user_id, amount) VALUES (1, 1, 100.0), (2, 1, 200.0), (3, 2, 150.0)");
+    var r4 = try db.execSQL(
+        "INSERT INTO orders (id, user_id, amount) VALUES (1, 1, 100.0), (2, 1, 200.0), " ++
+            "(3, 2, 150.0)",
+    );
     defer r4.close(testing.allocator);
 
     // Prepare complex JOIN query
-    var stmt = try db.prepare(testing.allocator, "SELECT u.name, o.amount FROM users u JOIN orders o ON u.id = o.user_id WHERE u.id = ?");
+    var stmt = try db.prepare(
+        testing.allocator,
+        "SELECT u.name, o.amount FROM users u JOIN orders o ON u.id = o.user_id WHERE u.id = ?",
+    );
     defer stmt.close();
 
     // Query for Alice's orders
@@ -30724,13 +33204,21 @@ test "prepared stmt: SELECT with multiple WHERE parameters" {
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
-    var r1 = try db.execSQL("CREATE TABLE test (id INTEGER PRIMARY KEY, category TEXT, price REAL)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE test (id INTEGER PRIMARY KEY, category TEXT, price REAL)",
+    );
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO test (id, category, price) VALUES (1, 'A', 10.0), (2, 'A', 20.0), (3, 'B', 15.0), (4, 'B', 25.0)");
+    var r2 = try db.execSQL(
+        "INSERT INTO test (id, category, price) VALUES (1, 'A', 10.0), (2, 'A', 20.0), " ++
+            "(3, 'B', 15.0), (4, 'B', 25.0)",
+    );
     defer r2.close(testing.allocator);
 
     // Prepare SELECT with multiple WHERE conditions
-    var stmt = try db.prepare(testing.allocator, "SELECT id FROM test WHERE category = ? AND price > ?");
+    var stmt = try db.prepare(
+        testing.allocator,
+        "SELECT id FROM test WHERE category = ? AND price > ?",
+    );
     defer stmt.close();
 
     try stmt.bind(0, Value{ .text = "A" });
@@ -30860,7 +33348,10 @@ test "prepared stmt: bind date parameter" {
     defer r1.close(testing.allocator);
 
     // Prepare INSERT statement with date parameter
-    var stmt = try db.prepare(testing.allocator, "INSERT INTO events (id, event_date) VALUES (?, ?)");
+    var stmt = try db.prepare(
+        testing.allocator,
+        "INSERT INTO events (id, event_date) VALUES (?, ?)",
+    );
     defer stmt.close();
 
     // Bind parameters: id=1, event_date=19723 (days since epoch)
@@ -30904,7 +33395,8 @@ test "prepared stmt: bind timestamp parameter" {
     var stmt = try db.prepare(testing.allocator, "INSERT INTO logs (id, created_at) VALUES (?, ?)");
     defer stmt.close();
 
-    // Bind parameters: id=42, created_at=1704067200000000 (microseconds since epoch, approx 2024-01-01 00:00:00 UTC)
+    // Bind parameters: id=42, created_at=1704067200000000 (microseconds since epoch, approx
+    // 2024-01-01 00:00:00 UTC)
     try stmt.bind(0, Value{ .integer = 42 });
     try stmt.bind(1, Value{ .timestamp = 1704067200000000 });
 
@@ -31024,7 +33516,7 @@ test "prepared stmt: bind date in WHERE clause" {
 // and don't represent production bugs. The global registry is designed to persist
 // for the lifetime of the process to maintain transaction ID monotonicity.
 
-// ── $N-Style Parameter Tests ──────────────────────────────────────────────
+// ── $N-Style Parameter Tests ─────────────────────
 
 test "numbered param: $1 in SELECT WHERE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -31043,7 +33535,9 @@ test "numbered param: $1 in SELECT WHERE" {
     // Setup test table
     var r1 = try db.execSQL("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO t (id, name) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')");
+    var r2 = try db.execSQL(
+        "INSERT INTO t (id, name) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')",
+    );
     defer r2.close(testing.allocator);
 
     // Prepare statement with $1 parameter
@@ -31128,7 +33622,10 @@ test "numbered param: reuse same parameter $1 twice" {
     // Setup test table
     var r1 = try db.execSQL("CREATE TABLE t (a INTEGER, b INTEGER, c TEXT)");
     defer r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO t (a, b, c) VALUES (5, 5, 'match'), (5, 10, 'partial'), (10, 5, 'partial2'), (10, 10, 'nomatch')");
+    var r2 = try db.execSQL(
+        "INSERT INTO t (a, b, c) VALUES (5, 5, 'match'), (5, 10, 'partial'), (10, 5, " ++
+            "'partial2'), (10, 10, 'nomatch')",
+    );
     defer r2.close(testing.allocator);
 
     // Prepare statement where $1 is used twice (a = $1 OR b = $1)
@@ -31165,7 +33662,11 @@ test "numbered param: out of order $2 before $1" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_numbered_param_out_of_order.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_numbered_param_out_of_order.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31269,7 +33770,9 @@ test "percentile_cont(0.5) WITHIN GROUP (ORDER BY value) - median with even set"
     var ins1 = try db.execSQL("INSERT INTO salaries VALUES (100.0), (200.0), (300.0), (400.0)");
     ins1.close(testing.allocator);
 
-    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY sal) FROM salaries");
+    var result = try db.execSQL(
+        "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY sal) FROM salaries",
+    );
     defer result.close(testing.allocator);
 
     if (try result.rows.?.next()) |*row_ptr| {
@@ -31445,7 +33948,9 @@ test "percentile_disc(0.5) WITHIN GROUP (ORDER BY value) - discrete median" {
     var ins1 = try db.execSQL("INSERT INTO salaries VALUES (100), (200), (300), (400)");
     ins1.close(testing.allocator);
 
-    var result = try db.execSQL("SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY sal) FROM salaries");
+    var result = try db.execSQL(
+        "SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY sal) FROM salaries",
+    );
     defer result.close(testing.allocator);
 
     if (try result.rows.?.next()) |*row_ptr| {
@@ -31539,7 +34044,9 @@ test "percentile_disc(0.5) WITHIN GROUP (ORDER BY value DESC) - with descending 
     var ins1 = try db.execSQL("INSERT INTO vals VALUES (100), (200), (300), (400)");
     ins1.close(testing.allocator);
 
-    var result = try db.execSQL("SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY v DESC) FROM vals");
+    var result = try db.execSQL(
+        "SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY v DESC) FROM vals",
+    );
     defer result.close(testing.allocator);
 
     if (try result.rows.?.next()) |*row_ptr| {
@@ -31632,7 +34139,9 @@ test "percentile_cont(0.25) WITHIN GROUP (ORDER BY value) - Q1 quartile" {
     var r1 = try db.execSQL("CREATE TABLE vals (v REAL)");
     r1.close(testing.allocator);
 
-    var ins1 = try db.execSQL("INSERT INTO vals VALUES (1.0), (2.0), (3.0), (4.0), (5.0), (6.0), (7.0), (8.0)");
+    var ins1 = try db.execSQL(
+        "INSERT INTO vals VALUES (1.0), (2.0), (3.0), (4.0), (5.0), (6.0), (7.0), (8.0)",
+    );
     ins1.close(testing.allocator);
 
     var result = try db.execSQL("SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY v) FROM vals");
@@ -31641,7 +34150,8 @@ test "percentile_cont(0.25) WITHIN GROUP (ORDER BY value) - Q1 quartile" {
     if (try result.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
         defer row.deinit();
-        // Q1 at 0.25: position = 0.25 * (8-1) + 1 = 2.75 (interpolate between 2nd and 3rd values: 2.0 and 3.0)
+        // Q1 at 0.25: position = 0.25 * (8-1) + 1 = 2.75 (interpolate between 2nd and 3rd values:
+        // 2.0 and 3.0)
         const val = row.values[0];
         switch (val) {
             .real => |r| try testing.expectApproxEqAbs(@as(f64, 2.75), r, 0.001),
@@ -31653,7 +34163,7 @@ test "percentile_cont(0.25) WITHIN GROUP (ORDER BY value) - Q1 quartile" {
     }
 }
 
-// ── generate_series() Table Function Tests ──────────────────────────────────
+// ── generate_series() Table Function Tests ─────────────────
 
 test "generate_series basic 1 to 5" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -31817,7 +34327,11 @@ test "generate_series float step" {
     const val1 = row1.values[0];
     switch (val1) {
         .real => |f| try testing.expectApproxEqAbs(@as(f64, 1.0), f, 0.001),
-        .integer => |i| try testing.expectApproxEqAbs(@as(f64, 1.0), @as(f64, @floatFromInt(i)), 0.001),
+        .integer => |i| try testing.expectApproxEqAbs(
+            @as(f64, 1.0),
+            @as(f64, @floatFromInt(i)),
+            0.001,
+        ),
         else => return error.TestUnexpectedResult,
     }
 
@@ -31826,7 +34340,11 @@ test "generate_series float step" {
     const val2 = row2.values[0];
     switch (val2) {
         .real => |f| try testing.expectApproxEqAbs(@as(f64, 1.5), f, 0.001),
-        .integer => |i| try testing.expectApproxEqAbs(@as(f64, 1.5), @as(f64, @floatFromInt(i)), 0.001),
+        .integer => |i| try testing.expectApproxEqAbs(
+            @as(f64, 1.5),
+            @as(f64, @floatFromInt(i)),
+            0.001,
+        ),
         else => return error.TestUnexpectedResult,
     }
 
@@ -31835,7 +34353,11 @@ test "generate_series float step" {
     const val3 = row3.values[0];
     switch (val3) {
         .real => |f| try testing.expectApproxEqAbs(@as(f64, 2.0), f, 0.001),
-        .integer => |i| try testing.expectApproxEqAbs(@as(f64, 2.0), @as(f64, @floatFromInt(i)), 0.001),
+        .integer => |i| try testing.expectApproxEqAbs(
+            @as(f64, 2.0),
+            @as(f64, @floatFromInt(i)),
+            0.001,
+        ),
         else => return error.TestUnexpectedResult,
     }
 
@@ -31866,7 +34388,7 @@ test "generate_series with WHERE" {
     try testing.expect((try r.rows.?.next()) == null);
 }
 
-// ── RETURNING Clause Tests ──────────────────────────────────────────────────
+// ── RETURNING Clause Tests ──────────────────────
 
 test "INSERT RETURNING *" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -31912,7 +34434,11 @@ test "INSERT RETURNING specific column" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_insert_returning_col.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_insert_returning_col.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -31945,7 +34471,11 @@ test "INSERT RETURNING expression" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_insert_returning_expr.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_insert_returning_expr.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32015,7 +34545,11 @@ test "UPDATE RETURNING specific column" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_update_returning_col.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_update_returning_col.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32132,11 +34666,16 @@ test "UPDATE RETURNING multiple rows" {
     var r1 = try db.execSQL("CREATE TABLE products (id INTEGER, name TEXT, category TEXT)");
     defer r1.close(testing.allocator);
 
-    var r2 = try db.execSQL("INSERT INTO products (id, name, category) VALUES (1, 'Widget', 'tools'), (2, 'Gadget', 'tools'), (3, 'Gizmo', 'tools')");
+    var r2 = try db.execSQL(
+        "INSERT INTO products (id, name, category) VALUES (1, 'Widget', 'tools'), (2, " ++
+            "'Gadget', 'tools'), (3, 'Gizmo', 'tools')",
+    );
     defer r2.close(testing.allocator);
 
     // Update multiple rows with RETURNING *
-    var r3 = try db.execSQL("UPDATE products SET category = 'electronics' WHERE category = 'tools' RETURNING *");
+    var r3 = try db.execSQL(
+        "UPDATE products SET category = 'electronics' WHERE category = 'tools' RETURNING *",
+    );
     defer r3.close(testing.allocator);
 
     // Should return all 3 updated rows
@@ -32170,7 +34709,10 @@ test "INSERT RETURNING multiple rows" {
     defer r1.close(testing.allocator);
 
     // Insert multiple rows with RETURNING *
-    var r2 = try db.execSQL("INSERT INTO items (id, value) VALUES (10, 'first'), (11, 'second'), (12, 'third') RETURNING *");
+    var r2 = try db.execSQL(
+        "INSERT INTO items (id, value) VALUES (10, 'first'), (11, 'second'), (12, " ++
+            "'third') RETURNING *",
+    );
     defer r2.close(testing.allocator);
 
     // Should return all 3 inserted rows
@@ -32215,13 +34757,16 @@ test "percentile_cont with integers" {
     var ins1 = try db.execSQL("INSERT INTO scores VALUES (10), (20), (30), (40), (50)");
     ins1.close(testing.allocator);
 
-    var result = try db.execSQL("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY score) FROM scores");
+    var result = try db.execSQL(
+        "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY score) FROM scores",
+    );
     defer result.close(testing.allocator);
 
     if (try result.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
         defer row.deinit();
-        // percentile_cont(0.5) with [10,20,30,40,50]: position = 0.5 * (5-1) = 2.0 → value at index 2 = 30
+        // percentile_cont(0.5) with [10,20,30,40,50]: position = 0.5 * (5-1) = 2.0 → value at
+        // index 2 = 30
         const val = row.values[0];
         switch (val) {
             .real => |r| try testing.expectApproxEqAbs(@as(f64, 30.0), r, 0.001),
@@ -32294,7 +34839,7 @@ test "percentile_cont empty table" {
     }
 }
 
-// ── INSERT ON CONFLICT (UPSERT) Tests ─────────────────────────────────────
+// ── INSERT ON CONFLICT (UPSERT) Tests ──────────────────
 
 test "INSERT ON CONFLICT DO NOTHING — basic" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -32305,7 +34850,11 @@ test "INSERT ON CONFLICT DO NOTHING — basic" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_nothing_basic.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_upsert_do_nothing_basic.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32323,7 +34872,9 @@ test "INSERT ON CONFLICT DO NOTHING — basic" {
     try testing.expectEqual(@as(u64, 1), r3.rows_affected);
 
     // Insert conflicting row with ON CONFLICT DO NOTHING — should not fail, row unchanged
-    var r4 = try db.execSQL("INSERT INTO users (id, name) VALUES (1, 'Bob') ON CONFLICT DO NOTHING");
+    var r4 = try db.execSQL(
+        "INSERT INTO users (id, name) VALUES (1, 'Bob') ON CONFLICT DO NOTHING",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 0), r4.rows_affected);
 
@@ -32359,7 +34910,11 @@ test "INSERT ON CONFLICT DO NOTHING — no conflict" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_nothing_no_conflict.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_upsert_do_nothing_no_conflict.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32376,7 +34931,9 @@ test "INSERT ON CONFLICT DO NOTHING — no conflict" {
     defer r3.close(testing.allocator);
 
     // Insert non-conflicting row with ON CONFLICT DO NOTHING — should actually insert
-    var r4 = try db.execSQL("INSERT INTO items (code, val) VALUES ('B', 20) ON CONFLICT DO NOTHING");
+    var r4 = try db.execSQL(
+        "INSERT INTO items (code, val) VALUES ('B', 20) ON CONFLICT DO NOTHING",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r4.rows_affected);
 
@@ -32418,7 +34975,9 @@ test "INSERT ON CONFLICT DO UPDATE SET — basic" {
     defer r3.close(testing.allocator);
 
     // Insert conflicting row with ON CONFLICT DO UPDATE SET — should update
-    var r4 = try db.execSQL("INSERT INTO kv (key, value) VALUES ('x', 99) ON CONFLICT DO UPDATE SET value = 99");
+    var r4 = try db.execSQL(
+        "INSERT INTO kv (key, value) VALUES ('x', 99) ON CONFLICT DO UPDATE SET value = 99",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r4.rows_affected);
 
@@ -32443,7 +35002,11 @@ test "INSERT ON CONFLICT DO UPDATE SET — uses EXCLUDED" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_excluded.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_upsert_do_update_excluded.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32459,8 +35022,12 @@ test "INSERT ON CONFLICT DO UPDATE SET — uses EXCLUDED" {
     var r3 = try db.execSQL("INSERT INTO kv (key, value) VALUES ('a', 10)");
     defer r3.close(testing.allocator);
 
-    // Insert conflicting row with EXCLUDED reference — should use value from the attempted insert (20)
-    var r4 = try db.execSQL("INSERT INTO kv (key, value) VALUES ('a', 20) ON CONFLICT DO UPDATE SET value = EXCLUDED.value");
+    // Insert conflicting row with EXCLUDED reference — should use value from the attempted insert
+    // (20)
+    var r4 = try db.execSQL(
+        "INSERT INTO kv (key, value) VALUES ('a', 20) ON CONFLICT DO UPDATE SET value = " ++
+            "EXCLUDED.value",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r4.rows_affected);
 
@@ -32502,7 +35069,10 @@ test "INSERT ON CONFLICT DO UPDATE SET — with expression" {
     defer r3.close(testing.allocator);
 
     // Insert conflicting row with expression — should add 5 + 1 = 6
-    var r4 = try db.execSQL("INSERT INTO counters (name, cnt) VALUES ('hits', 1) ON CONFLICT DO UPDATE SET cnt = counters.cnt + EXCLUDED.cnt");
+    var r4 = try db.execSQL(
+        "INSERT INTO counters (name, cnt) VALUES ('hits', 1) ON CONFLICT DO UPDATE SET " ++
+            "cnt = counters.cnt + EXCLUDED.cnt",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r4.rows_affected);
 
@@ -32527,7 +35097,11 @@ test "INSERT ON CONFLICT DO NOTHING — multiple values, some conflict" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_nothing_multi.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_upsert_do_nothing_multi.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32587,7 +35161,10 @@ test "INSERT ON CONFLICT DO UPDATE SET — multiple assignments" {
     defer r3.close(testing.allocator);
 
     // Insert conflicting row with multiple SET assignments
-    var r4 = try db.execSQL("INSERT INTO product (sku, name, price) VALUES ('A1', 'WidgetV2', 15) ON CONFLICT DO UPDATE SET name = 'WidgetV2', price = 15");
+    var r4 = try db.execSQL(
+        "INSERT INTO product (sku, name, price) VALUES ('A1', 'WidgetV2', 15) ON " ++
+            "CONFLICT DO UPDATE SET name = 'WidgetV2', price = 15",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r4.rows_affected);
 
@@ -32613,7 +35190,11 @@ test "INSERT ON CONFLICT DO NOTHING — with RETURNING" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_nothing_returning.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_upsert_do_nothing_returning.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32626,7 +35207,9 @@ test "INSERT ON CONFLICT DO NOTHING — with RETURNING" {
     defer r2.close(testing.allocator);
 
     // Insert first row with RETURNING — should return 1 row
-    var r3 = try db.execSQL("INSERT INTO events (id, msg) VALUES (1, 'first') ON CONFLICT DO NOTHING RETURNING *");
+    var r3 = try db.execSQL(
+        "INSERT INTO events (id, msg) VALUES (1, 'first') ON CONFLICT DO NOTHING RETURNING *",
+    );
     defer r3.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r3.rows_affected);
 
@@ -32641,7 +35224,9 @@ test "INSERT ON CONFLICT DO NOTHING — with RETURNING" {
     try testing.expectEqual(@as(usize, 1), count);
 
     // Insert conflicting row with RETURNING — should return 0 rows (nothing inserted/updated)
-    var r4 = try db.execSQL("INSERT INTO events (id, msg) VALUES (1, 'second') ON CONFLICT DO NOTHING RETURNING *");
+    var r4 = try db.execSQL(
+        "INSERT INTO events (id, msg) VALUES (1, 'second') ON CONFLICT DO NOTHING RETURNING *",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 0), r4.rows_affected);
 
@@ -32663,7 +35248,11 @@ test "INSERT ON CONFLICT DO UPDATE — MVCC: row has TupleHeader in transaction"
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_mvcc_header.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_upsert_do_update_mvcc_header.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32685,7 +35274,10 @@ test "INSERT ON CONFLICT DO UPDATE — MVCC: row has TupleHeader in transaction"
     try testing.expect(db.current_txn != null);
 
     // Run INSERT ... ON CONFLICT DO UPDATE (should update existing row with MVCC header)
-    var r4 = try db.execSQL("INSERT INTO items (id, value) VALUES (1, 'updated') ON CONFLICT DO UPDATE SET value = 'updated'");
+    var r4 = try db.execSQL(
+        "INSERT INTO items (id, value) VALUES (1, 'updated') ON CONFLICT DO UPDATE SET " ++
+            "value = 'updated'",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r4.rows_affected);
 
@@ -32699,7 +35291,8 @@ test "INSERT ON CONFLICT DO UPDATE — MVCC: row has TupleHeader in transaction"
     var key_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &key_buf, 0, .big);
     var tree = BTree.init(db.pool, data_root);
-    const raw_row_data = (try tree.get(testing.allocator, &key_buf)) orelse return error.TestUnexpectedResult;
+    const raw_row_data =
+        (try tree.get(testing.allocator, &key_buf)) orelse return error.TestUnexpectedResult;
     defer testing.allocator.free(raw_row_data);
 
     // Verify the row has an MVCC header by checking if it starts with ROW_VERSION_MVCC (0xAA)
@@ -32718,7 +35311,11 @@ test "INSERT ON CONFLICT DO UPDATE — MVCC: header has correct xmin in transact
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_upsert_do_update_mvcc_xmin.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_upsert_do_update_mvcc_xmin.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -32741,7 +35338,9 @@ test "INSERT ON CONFLICT DO UPDATE — MVCC: header has correct xmin in transact
     const xid = db.current_txn.?.xid;
 
     // Run INSERT ... ON CONFLICT DO UPDATE
-    var r4 = try db.execSQL("INSERT INTO kv (key, val) VALUES ('x', 20) ON CONFLICT DO UPDATE SET val = 20");
+    var r4 = try db.execSQL(
+        "INSERT INTO kv (key, val) VALUES ('x', 20) ON CONFLICT DO UPDATE SET val = 20",
+    );
     defer r4.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r4.rows_affected);
 
@@ -32753,7 +35352,8 @@ test "INSERT ON CONFLICT DO UPDATE — MVCC: header has correct xmin in transact
     var key_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &key_buf, 0, .big);
     var tree = BTree.init(db.pool, table_info.data_root_page_id);
-    const raw_row_data = (try tree.get(testing.allocator, &key_buf)) orelse return error.TestUnexpectedResult;
+    const raw_row_data =
+        (try tree.get(testing.allocator, &key_buf)) orelse return error.TestUnexpectedResult;
     defer testing.allocator.free(raw_row_data);
 
     // Deserialize the versioned row and check xmin matches transaction xid
@@ -33073,7 +35673,9 @@ test "json_each with WHERE clause" {
     var db = try Database.open(testing.allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.exec("SELECT key, value FROM json_each('{\"a\":1,\"b\":2,\"c\":3}') WHERE key != 'b'");
+    var r = try db.exec(
+        "SELECT key, value FROM json_each('{\"a\":1,\"b\":2,\"c\":3}') WHERE key != 'b'",
+    );
     defer r.close(testing.allocator);
 
     // Collect rows to check count and verify both a and c are present
@@ -33098,7 +35700,7 @@ test "json_each with WHERE clause" {
     }
 }
 
-// ── LATERAL join support for table-valued functions ──────────────────────────
+// ── LATERAL join support for table-valued functions ──────────────
 
 test "LATERAL — json_each expands column from table" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -33172,7 +35774,11 @@ test "LATERAL — json_each multiple rows expand independently" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lateral_json_each_multi.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_lateral_json_each_multi.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33181,7 +35787,9 @@ test "LATERAL — json_each multiple rows expand independently" {
     defer r1.close(testing.allocator);
 
     // Insert two rows with different JSON
-    var r2 = try db.execSQL("INSERT INTO t VALUES (1, '{\"x\":1,\"y\":2}'), (2, '{\"a\":10,\"b\":20}')");
+    var r2 = try db.execSQL(
+        "INSERT INTO t VALUES (1, '{\"x\":1,\"y\":2}'), (2, '{\"a\":10,\"b\":20}')",
+    );
     defer r2.close(testing.allocator);
 
     // Select with LATERAL json_each - should produce 4 rows total (2+2)
@@ -33222,7 +35830,9 @@ test "LATERAL — LEFT JOIN LATERAL with empty JSON object" {
 
     // Select with LEFT JOIN LATERAL json_each on empty object
     // Should produce 1 row with NULLs for j.key and j.value
-    var r3 = try db.execSQL("SELECT t.id, j.key, j.value FROM t LEFT JOIN LATERAL json_each(t.data) j ON true");
+    var r3 = try db.execSQL(
+        "SELECT t.id, j.key, j.value FROM t LEFT JOIN LATERAL json_each(t.data) j ON true",
+    );
     defer r3.close(testing.allocator);
 
     var row_count: usize = 0;
@@ -33315,7 +35925,11 @@ test "LATERAL — generate_series with column as stop" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_lateral_generate_series.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_lateral_generate_series.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -33328,7 +35942,9 @@ test "LATERAL — generate_series with column as stop" {
     defer r2.close(testing.allocator);
 
     // Select with LATERAL generate_series - should produce 1 + 2 + 3 = 6 rows total
-    var r3 = try db.execSQL("SELECT t.n, s.generate_series FROM t, LATERAL generate_series(1, t.n) s");
+    var r3 = try db.execSQL(
+        "SELECT t.n, s.generate_series FROM t, LATERAL generate_series(1, t.n) s",
+    );
     defer r3.close(testing.allocator);
 
     var row_count: usize = 0;
@@ -33342,7 +35958,7 @@ test "LATERAL — generate_series with column as stop" {
     try testing.expectEqual(@as(usize, 6), row_count);
 }
 
-// ── row_to_json Integration Tests ──────────────────────────────────────────────
+// ── row_to_json Integration Tests ────────────────────
 
 test "row_to_json integration: basic row from table" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -33358,7 +35974,9 @@ test "row_to_json integration: basic row from table" {
     defer cleanupTestDb(&db, path);
 
     // Create employees table
-    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
+    );
     defer r1.close(testing.allocator);
 
     // Insert test data
@@ -33419,11 +36037,15 @@ test "row_to_json integration: filtered single row with WHERE" {
     defer cleanupTestDb(&db, path);
 
     // Create employees table
-    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
+    );
     defer r1.close(testing.allocator);
 
     // Insert test data
-    var r2 = try db.execSQL("INSERT INTO employees VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)");
+    var r2 = try db.execSQL(
+        "INSERT INTO employees VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)",
+    );
     defer r2.close(testing.allocator);
 
     // SELECT row_to_json(t) FROM employees t WHERE id = 2
@@ -33456,7 +36078,7 @@ test "row_to_json integration: filtered single row with WHERE" {
     try testing.expect(found_bob);
 }
 
-// ── FILTER Clause for Aggregate Functions Tests ──────────────────────────────
+// ── FILTER Clause for Aggregate Functions Tests ───────────────
 
 test "FILTER — COUNT(*) FILTER (WHERE condition)" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -33476,7 +36098,10 @@ test "FILTER — COUNT(*) FILTER (WHERE condition)" {
     defer r1.close(testing.allocator);
 
     // Insert test data
-    var r2 = try db.execSQL("INSERT INTO employees VALUES (1, 'Alice', 60000), (2, 'Bob', 45000), (3, 'Charlie', 75000)");
+    var r2 = try db.execSQL(
+        "INSERT INTO employees VALUES (1, 'Alice', 60000), (2, 'Bob', 45000), (3, " ++
+            "'Charlie', 75000)",
+    );
     defer r2.close(testing.allocator);
 
     // SELECT COUNT(*) FILTER (WHERE salary > 50000) FROM employees
@@ -33644,11 +36269,16 @@ test "FILTER — Multiple FILTER clauses in one SELECT" {
     defer r1.close(testing.allocator);
 
     // Insert test data
-    var r2 = try db.execSQL("INSERT INTO sales VALUES (1, 100, true), (2, 50, false), (3, 200, true), (4, 75, false)");
+    var r2 = try db.execSQL(
+        "INSERT INTO sales VALUES (1, 100, true), (2, 50, false), (3, 200, true), (4, 75, false)",
+    );
     defer r2.close(testing.allocator);
 
     // SELECT COUNT(*) FILTER (WHERE active=true), SUM(amount) FILTER (WHERE amount > 75) FROM sales
-    var r3 = try db.execSQL("SELECT COUNT(*) FILTER (WHERE active=true), SUM(amount) FILTER (WHERE amount > 75) FROM sales");
+    var r3 = try db.execSQL(
+        "SELECT COUNT(*) FILTER (WHERE active=true), SUM(amount) FILTER (WHERE amount > " ++
+            "75) FROM sales",
+    );
     defer r3.close(testing.allocator);
 
     var count_active: i64 = 0;
@@ -33692,11 +36322,16 @@ test "FILTER — with GROUP BY" {
     defer r1.close(testing.allocator);
 
     // Insert test data
-    var r2 = try db.execSQL("INSERT INTO employees VALUES (1, 'Sales', 60000), (2, 'Sales', 45000), (3, 'Engineering', 75000), (4, 'Engineering', 80000)");
+    var r2 = try db.execSQL(
+        "INSERT INTO employees VALUES (1, 'Sales', 60000), (2, 'Sales', 45000), (3, " ++
+            "'Engineering', 75000), (4, 'Engineering', 80000)",
+    );
     defer r2.close(testing.allocator);
 
     // SELECT dept, COUNT(*) FILTER (WHERE salary > 50000) FROM employees GROUP BY dept
-    var r3 = try db.execSQL("SELECT dept, COUNT(*) FILTER (WHERE salary > 50000) FROM employees GROUP BY dept");
+    var r3 = try db.execSQL(
+        "SELECT dept, COUNT(*) FILTER (WHERE salary > 50000) FROM employees GROUP BY dept",
+    );
     defer r3.close(testing.allocator);
 
     var rows = std.ArrayListUnmanaged([2][]const u8){};
@@ -33719,7 +36354,11 @@ test "FILTER — with GROUP BY" {
         try testing.expect(row.values[1] == .integer);
 
         const dept = try testing.allocator.dupe(u8, row.values[0].text);
-        const count_str = try std.fmt.allocPrint(testing.allocator, "{d}", .{row.values[1].integer});
+        const count_str = try std.fmt.allocPrint(
+            testing.allocator,
+            "{d}",
+            .{row.values[1].integer},
+        );
 
         try rows.append(testing.allocator, .{ dept, count_str });
     }
@@ -33818,7 +36457,9 @@ test "ROLLUP: basic two-column rollup" {
     // - 3 detail rows (Engineering/Engineer, Engineering/Manager, Sales/Rep)
     // - 2 dept subtotals (Engineering/NULL sum=220000, Sales/NULL sum=80000)
     // - 1 grand total (NULL/NULL sum=300000)
-    var result = try db.execSQL("SELECT dept, job, SUM(salary) FROM emp GROUP BY ROLLUP(dept, job)");
+    var result = try db.execSQL(
+        "SELECT dept, job, SUM(salary) FROM emp GROUP BY ROLLUP(dept, job)",
+    );
     defer result.close(testing.allocator);
 
     var row_count: usize = 0;
@@ -33985,7 +36626,9 @@ test "GROUPING SETS: explicit three groupings" {
     // - 2 a-subtotals (x/NULL=30, y/NULL=30)
     // - 1 grand total (NULL/NULL=60)
     // Total: 6 rows
-    var result = try db.execSQL("SELECT a, b, SUM(v) FROM t GROUP BY GROUPING SETS((a, b), (a), ())");
+    var result = try db.execSQL(
+        "SELECT a, b, SUM(v) FROM t GROUP BY GROUPING SETS((a, b), (a), ())",
+    );
     defer result.close(testing.allocator);
 
     var row_count: usize = 0;
@@ -34082,7 +36725,9 @@ test "ROLLUP: NULL in non-grouped columns" {
     // Query with ROLLUP(dept, job)
     // For the dept subtotal row (dept='Engineering', job should be NULL)
     // For the grand total row (both should be NULL)
-    var result = try db.execSQL("SELECT dept, job, SUM(salary) FROM emp GROUP BY ROLLUP(dept, job)");
+    var result = try db.execSQL(
+        "SELECT dept, job, SUM(salary) FROM emp GROUP BY ROLLUP(dept, job)",
+    );
     defer result.close(testing.allocator);
 
     var found_dept_subtotal = false;
@@ -34144,7 +36789,9 @@ test "GROUPING() with ROLLUP — detect grand total rows" {
 
     // Query with ROLLUP(dept) and GROUPING(dept)
     // GROUPING(dept) returns 0 for normal grouped rows, 1 for grand total rows
-    var result = try db.execSQL("SELECT dept, SUM(salary), GROUPING(dept) FROM emp GROUP BY ROLLUP(dept)");
+    var result = try db.execSQL(
+        "SELECT dept, SUM(salary), GROUPING(dept) FROM emp GROUP BY ROLLUP(dept)",
+    );
     defer result.close(testing.allocator);
 
     var row_count: usize = 0;
@@ -34211,7 +36858,9 @@ test "GROUPING() with GROUPING SETS — bitmask for two-arg GROUPING" {
     // - (a,b) grouping: GROUPING(a, b) = 0b00 = 0 (both active)
     // - (a) grouping: GROUPING(a, b) = 0b01 = 1 (b is NULLed: bit 0 set)
     // - () grand total: GROUPING(a, b) = 0b11 = 3 (both NULLed: bits 1 and 0 set)
-    var result = try db.execSQL("SELECT a, b, SUM(v), GROUPING(a, b) FROM t GROUP BY GROUPING SETS((a, b), (a), ())");
+    var result = try db.execSQL(
+        "SELECT a, b, SUM(v), GROUPING(a, b) FROM t GROUP BY GROUPING SETS((a, b), (a), ())",
+    );
     defer result.close(testing.allocator);
 
     var row_count: usize = 0;
@@ -34319,7 +36968,11 @@ test "ORDER BY ASC NULLS FIRST — NULLs appear before non-NULLs" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_nulls_first_asc.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_order_nulls_first_asc.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34366,7 +37019,11 @@ test "ORDER BY ASC NULLS LAST — NULLs appear after non-NULLs" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_nulls_last_asc.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_order_nulls_last_asc.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34413,7 +37070,11 @@ test "ORDER BY DESC NULLS LAST — NULLs appear after non-NULLs in DESC sort" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_nulls_last_desc.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_order_nulls_last_desc.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34460,7 +37121,11 @@ test "ORDER BY DESC NULLS FIRST — NULLs appear before non-NULLs in DESC sort" 
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_order_nulls_first_desc.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_order_nulls_first_desc.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34748,7 +37413,11 @@ test "Multi-column ORDER BY with different NULLS policies" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_multicolumn_order_nulls.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_multicolumn_order_nulls.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34767,7 +37436,9 @@ test "Multi-column ORDER BY with different NULLS policies" {
     ins = try db.execSQL("INSERT INTO data VALUES ('B', 1)");
     ins.close(testing.allocator);
 
-    var result = try db.execSQL("SELECT category, val FROM data ORDER BY category ASC NULLS FIRST, val DESC NULLS LAST");
+    var result = try db.execSQL(
+        "SELECT category, val FROM data ORDER BY category ASC NULLS FIRST, val DESC NULLS LAST",
+    );
     defer result.close(testing.allocator);
 
     // Expected: NULLs in category first, then 'A', then 'B'
@@ -34859,7 +37530,9 @@ test "FETCH FIRST combined with OFFSET" {
     var ins = try db.execSQL("INSERT INTO nums VALUES (1), (2), (3), (4), (5)");
     ins.close(testing.allocator);
 
-    var result = try db.execSQL("SELECT val FROM nums ORDER BY val OFFSET 2 ROWS FETCH NEXT 2 ROWS ONLY");
+    var result = try db.execSQL(
+        "SELECT val FROM nums ORDER BY val OFFSET 2 ROWS FETCH NEXT 2 ROWS ONLY",
+    );
     defer result.close(testing.allocator);
 
     // Skip first 2, return next 2 → [3, 4]
@@ -34887,7 +37560,11 @@ test "FETCH FIRST more rows than available" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_fetch_more_than_available.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_fetch_more_than_available.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -34996,7 +37673,10 @@ test "Window function ORDER BY with NULLS FIRST" {
 
     // ORDER BY val NULLS FIRST for deterministic output ordering.
     // Within NULLs, relative rn order is arbitrary — just check NULLs get ranks 1 or 2.
-    var result = try db.execSQL("SELECT val, ROW_NUMBER() OVER (ORDER BY val NULLS FIRST) as rn FROM nums ORDER BY val NULLS FIRST");
+    var result = try db.execSQL(
+        "SELECT val, ROW_NUMBER() OVER (ORDER BY val NULLS FIRST) as rn FROM nums ORDER " ++
+            "BY val NULLS FIRST",
+    );
     defer result.close(testing.allocator);
 
     var idx: usize = 0;
@@ -35055,12 +37735,16 @@ test "GENERATED ALWAYS AS — basic string concatenation" {
     defer r1.close(testing.allocator);
 
     // Insert row with only base columns
-    var r2 = try db.execSQL("INSERT INTO employees (id, first_name, last_name) VALUES (1, 'Alice', 'Smith')");
+    var r2 = try db.execSQL(
+        "INSERT INTO employees (id, first_name, last_name) VALUES (1, 'Alice', 'Smith')",
+    );
     defer r2.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r2.rows_affected);
 
     // Select and verify generated column
-    var r3 = try db.execSQL("SELECT id, first_name, last_name, full_name FROM employees WHERE id = 1");
+    var r3 = try db.execSQL(
+        "SELECT id, first_name, last_name, full_name FROM employees WHERE id = 1",
+    );
     defer r3.close(testing.allocator);
 
     var found = false;
@@ -35151,11 +37835,15 @@ test "GENERATED ALWAYS AS — generated column survives UPDATE of base columns" 
     defer r1.close(testing.allocator);
 
     // Insert initial row
-    var r2 = try db.execSQL("INSERT INTO items (id, name, desc) VALUES (100, 'Widget', 'A useful widget')");
+    var r2 = try db.execSQL(
+        "INSERT INTO items (id, name, desc) VALUES (100, 'Widget', 'A useful widget')",
+    );
     defer r2.close(testing.allocator);
 
     // Update base columns
-    var r3 = try db.execSQL("UPDATE items SET name = 'Gadget', desc = 'A super gadget' WHERE id = 100");
+    var r3 = try db.execSQL(
+        "UPDATE items SET name = 'Gadget', desc = 'A super gadget' WHERE id = 100",
+    );
     defer r3.close(testing.allocator);
     try testing.expectEqual(@as(u64, 1), r3.rows_affected);
 
@@ -35187,7 +37875,11 @@ test "GENERATED ALWAYS AS — error when inserting into generated column" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_eng_generated_no_insert.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_eng_generated_no_insert.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -35202,7 +37894,9 @@ test "GENERATED ALWAYS AS — error when inserting into generated column" {
     defer r1.close(testing.allocator);
 
     // Attempt to insert into generated column should fail
-    const r2 = db.execSQL("INSERT INTO records (id, val, computed) VALUES (1, 'test', 'should_fail')");
+    const r2 = db.execSQL(
+        "INSERT INTO records (id, val, computed) VALUES (1, 'test', 'should_fail')",
+    );
 
     // Expect error when trying to insert into generated column
     // Before feature implementation, this may fail at parse or execution stage
@@ -35234,7 +37928,9 @@ test "GENERATED ALWAYS AS — generated column is selectable like any other" {
     defer r1.close(testing.allocator);
 
     // Insert multiple rows
-    var r2 = try db.execSQL("INSERT INTO data (id, x, y) VALUES (1, 10, 20), (2, 30, 40), (3, 50, 60)");
+    var r2 = try db.execSQL(
+        "INSERT INTO data (id, x, y) VALUES (1, 10, 20), (2, 30, 40), (3, 50, 60)",
+    );
     defer r2.close(testing.allocator);
     try testing.expectEqual(@as(u64, 3), r2.rows_affected);
 
@@ -35682,7 +38378,9 @@ test "CHECK: multi-column expression references column by name" {
     defer cleanupTestDb(&db, path);
 
     // Create table with multi-column CHECK constraint
-    _ = try db.exec("CREATE TABLE t (id INTEGER, min_val INTEGER, max_val INTEGER CHECK (max_val >= min_val))");
+    _ = try db.exec(
+        "CREATE TABLE t (id INTEGER, min_val INTEGER, max_val INTEGER CHECK (max_val >= min_val))",
+    );
 
     // Valid row (max >= min)
     _ = try db.exec("INSERT INTO t VALUES (1, 5, 10)");
@@ -35706,7 +38404,9 @@ test "CHECK: text comparison constraint" {
     defer cleanupTestDb(&db, path);
 
     // Create table with text CHECK constraint
-    _ = try db.exec("CREATE TABLE t (id INTEGER, status TEXT CHECK (status = 'active' OR status = 'inactive'))");
+    _ = try db.exec(
+        "CREATE TABLE t (id INTEGER, status TEXT CHECK (status = 'active' OR status = 'inactive'))",
+    );
 
     // Valid value 'active'
     _ = try db.exec("INSERT INTO t VALUES (1, 'active')");
@@ -35795,7 +38495,10 @@ test "CHECK: IN expression" {
     defer cleanupTestDb(&db, path);
 
     // Create table with IN CHECK constraint
-    _ = try db.exec("CREATE TABLE t (id INTEGER, status TEXT CHECK (status IN ('active', 'inactive', 'pending')))");
+    _ = try db.exec(
+        "CREATE TABLE t (id INTEGER, status TEXT CHECK (status IN ('active', 'inactive', " ++
+            "'pending')))",
+    );
 
     // Insert valid values
     _ = try db.exec("INSERT INTO t VALUES (1, 'active')");
@@ -36355,7 +39058,11 @@ test "percentile_disc(0.25) and percentile_disc(0.75) — quartiles" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_quartiles.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_percentile_disc_quartiles.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -36453,8 +39160,11 @@ test "percentile_cont ORDER BY DESC — reverses sort order" {
     var ins1 = try db.execSQL("INSERT INTO t VALUES (1.0), (2.0), (3.0), (4.0), (5.0)");
     ins1.close(testing.allocator);
 
-    // ORDER BY DESC reverses: [5.0,4.0,3.0,2.0,1.0], percentile_cont(0.0) = 5.0 (min in DESC = max value)
-    var result = try db.execSQL("SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v DESC) FROM t");
+    // ORDER BY DESC reverses: [5.0,4.0,3.0,2.0,1.0], percentile_cont(0.0) = 5.0 (min in DESC = max
+    // value)
+    var result = try db.execSQL(
+        "SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v DESC) FROM t",
+    );
     defer result.close(testing.allocator);
 
     if (try result.rows.?.next()) |*row_ptr| {
@@ -36480,16 +39190,25 @@ test "percentile_disc WITH GROUP BY — aggregate per group" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_percentile_disc_groupby.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_percentile_disc_groupby.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
     var r1 = try db.execSQL("CREATE TABLE emp (dept TEXT, salary INTEGER)");
     r1.close(testing.allocator);
-    var ins1 = try db.execSQL("INSERT INTO emp VALUES ('A', 100), ('A', 200), ('A', 300), ('B', 50), ('B', 150)");
+    var ins1 = try db.execSQL(
+        "INSERT INTO emp VALUES ('A', 100), ('A', 200), ('A', 300), ('B', 50), ('B', 150)",
+    );
     ins1.close(testing.allocator);
 
-    var result = try db.execSQL("SELECT dept, percentile_disc(0.5) WITHIN GROUP (ORDER BY salary) FROM emp GROUP BY dept ORDER BY dept");
+    var result = try db.execSQL(
+        "SELECT dept, percentile_disc(0.5) WITHIN GROUP (ORDER BY salary) FROM emp GROUP " ++
+            "BY dept ORDER BY dept",
+    );
     defer result.close(testing.allocator);
 
     // Row 1: dept='A', percentile_disc(0.5) of [100,200,300] = ceil(0.5*3)=2nd = 200
@@ -36539,7 +39258,9 @@ test "CREATE TABLE AS SELECT — basic copy of all columns from source table" {
     // Create source table with test data
     var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, name TEXT, salary INTEGER)");
     r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Alice', 50000), (2, 'Bob', 60000), (3, 'Charlie', 70000)");
+    var r2 = try db.execSQL(
+        "INSERT INTO emp VALUES (1, 'Alice', 50000), (2, 'Bob', 60000), (3, 'Charlie', 70000)",
+    );
     r2.close(testing.allocator);
 
     // Create new table from SELECT
@@ -36556,7 +39277,11 @@ test "CREATE TABLE AS SELECT — basic copy of all columns from source table" {
         var row = row_ptr.*;
         defer row.deinit();
         try testing.expectEqual(expected[idx][0], row.values[0].integer); // id
-        try testing.expectEqualStrings(if (idx == 0) "Alice" else if (idx == 1) "Bob" else "Charlie", row.values[1].text); // Verify we iterate
+        // Verify we iterate
+        try testing.expectEqualStrings(
+            if (idx == 0) "Alice" else if (idx == 1) "Bob" else "Charlie",
+            row.values[1].text,
+        );
         try testing.expectEqual(expected[idx][1], row.values[2].integer); // salary
     }
     try testing.expectEqual(@as(usize, 3), idx);
@@ -36576,13 +39301,20 @@ test "CREATE TABLE AS SELECT — with column selection and WHERE filter" {
     defer cleanupTestDb(&db, path);
 
     // Create source table
-    var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, name TEXT, age INTEGER, salary INTEGER)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE emp (id INTEGER, name TEXT, age INTEGER, salary INTEGER)",
+    );
     r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Alice', 25, 50000), (2, 'Bob', 35, 60000), (3, 'Charlie', 28, 70000), (4, 'Dave', 45, 80000)");
+    var r2 = try db.execSQL(
+        "INSERT INTO emp VALUES (1, 'Alice', 25, 50000), (2, 'Bob', 35, 60000), (3, " ++
+            "'Charlie', 28, 70000), (4, 'Dave', 45, 80000)",
+    );
     r2.close(testing.allocator);
 
     // Create new table selecting only some columns and filtering
-    var r3 = try db.execSQL("CREATE TABLE young_emp AS SELECT id, name, salary FROM emp WHERE age < 35");
+    var r3 = try db.execSQL(
+        "CREATE TABLE young_emp AS SELECT id, name, salary FROM emp WHERE age < 35",
+    );
     r3.close(testing.allocator);
 
     // Verify new table has filtered data
@@ -36629,11 +39361,15 @@ test "CREATE TABLE AS SELECT — with computed/aliased column" {
     // Create source table
     var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, name TEXT, salary INTEGER)");
     r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Alice', 100), (2, 'Bob', 200), (3, 'Charlie', 300)");
+    var r2 = try db.execSQL(
+        "INSERT INTO emp VALUES (1, 'Alice', 100), (2, 'Bob', 200), (3, 'Charlie', 300)",
+    );
     r2.close(testing.allocator);
 
     // Create new table with computed column (salary * 2 as doubled)
-    var r3 = try db.execSQL("CREATE TABLE emp_bonus AS SELECT id, name, salary, salary * 2 AS doubled FROM emp");
+    var r3 = try db.execSQL(
+        "CREATE TABLE emp_bonus AS SELECT id, name, salary, salary * 2 AS doubled FROM emp",
+    );
     r3.close(testing.allocator);
 
     // Verify new table has computed column
@@ -36668,11 +39404,17 @@ test "CREATE TABLE AS SELECT — with aggregation and GROUP BY" {
     // Create source table
     var r1 = try db.execSQL("CREATE TABLE emp (id INTEGER, dept TEXT, salary INTEGER)");
     r1.close(testing.allocator);
-    var r2 = try db.execSQL("INSERT INTO emp VALUES (1, 'Sales', 50000), (2, 'Sales', 60000), (3, 'IT', 70000), (4, 'IT', 80000), (5, 'HR', 55000)");
+    var r2 = try db.execSQL(
+        "INSERT INTO emp VALUES (1, 'Sales', 50000), (2, 'Sales', 60000), (3, 'IT', " ++
+            "70000), (4, 'IT', 80000), (5, 'HR', 55000)",
+    );
     r2.close(testing.allocator);
 
     // Create summary table with aggregates
-    var r3 = try db.execSQL("CREATE TABLE dept_stats AS SELECT dept, COUNT(*) AS cnt, AVG(salary) AS avg_sal FROM emp GROUP BY dept");
+    var r3 = try db.execSQL(
+        "CREATE TABLE dept_stats AS SELECT dept, COUNT(*) AS cnt, AVG(salary) AS avg_sal " ++
+            "FROM emp GROUP BY dept",
+    );
     r3.close(testing.allocator);
 
     // Verify summary table
@@ -36771,7 +39513,9 @@ test "CREATE TABLE IF NOT EXISTS AS SELECT — succeeds then no-op on second att
     }
 
     // Second CTAS IF NOT EXISTS should be no-op (not error)
-    var r4 = try db.execSQL("CREATE TABLE IF NOT EXISTS emp_copy AS SELECT id, name FROM emp WHERE id = 1");
+    var r4 = try db.execSQL(
+        "CREATE TABLE IF NOT EXISTS emp_copy AS SELECT id, name FROM emp WHERE id = 1",
+    );
     r4.close(testing.allocator);
 
     // Verify data is unchanged (still has 2 rows, not 1)
@@ -36786,7 +39530,7 @@ test "CREATE TABLE IF NOT EXISTS AS SELECT — succeeds then no-op on second att
     }
 }
 
-// ── IS DISTINCT FROM / IS NOT DISTINCT FROM tests ──────────────────────────
+// ── IS DISTINCT FROM / IS NOT DISTINCT FROM tests ──────────────
 
 test "IS DISTINCT FROM: NULL IS DISTINCT FROM NULL returns FALSE" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -37014,7 +39758,9 @@ test "IS DISTINCT FROM: with table columns" {
     _ = try db.execSQL("INSERT INTO test_vals VALUES (1, NULL), (2, 42), (3, 42)");
 
     // Retrieve row with NULL value and check IS DISTINCT FROM
-    var result1 = try db.execSQL("SELECT id, val IS DISTINCT FROM NULL as is_distinct FROM test_vals WHERE id = 1");
+    var result1 = try db.execSQL(
+        "SELECT id, val IS DISTINCT FROM NULL as is_distinct FROM test_vals WHERE id = 1",
+    );
     defer result1.close(allocator);
     if (try result1.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
@@ -37027,7 +39773,9 @@ test "IS DISTINCT FROM: with table columns" {
     }
 
     // Retrieve row with non-NULL value and check IS DISTINCT FROM
-    var result2 = try db.execSQL("SELECT id, val IS DISTINCT FROM NULL as is_distinct FROM test_vals WHERE id = 2");
+    var result2 = try db.execSQL(
+        "SELECT id, val IS DISTINCT FROM NULL as is_distinct FROM test_vals WHERE id = 2",
+    );
     defer result2.close(allocator);
     if (try result2.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
@@ -37049,10 +39797,14 @@ test "IS NOT DISTINCT FROM: in WHERE clause" {
     defer db.close();
 
     _ = try db.execSQL("CREATE TABLE nullable_vals (id INTEGER, note TEXT)");
-    _ = try db.execSQL("INSERT INTO nullable_vals VALUES (1, NULL), (2, 'data'), (3, NULL), (4, 'more')");
+    _ = try db.execSQL(
+        "INSERT INTO nullable_vals VALUES (1, NULL), (2, 'data'), (3, NULL), (4, 'more')",
+    );
 
     // SELECT rows WHERE note IS NOT DISTINCT FROM NULL (i.e., note IS NULL)
-    var result = try db.execSQL("SELECT id FROM nullable_vals WHERE note IS NOT DISTINCT FROM NULL ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM nullable_vals WHERE note IS NOT DISTINCT FROM NULL ORDER BY id",
+    );
     defer result.close(allocator);
 
     var count: usize = 0;
@@ -37080,7 +39832,9 @@ test "IS DISTINCT FROM: in WHERE clause with non-NULL values" {
     _ = try db.execSQL("INSERT INTO cmp_vals VALUES (1, 10), (2, 20), (3, 10), (4, 30)");
 
     // SELECT rows WHERE val IS DISTINCT FROM 10 (i.e., val != 10)
-    var result = try db.execSQL("SELECT id FROM cmp_vals WHERE val IS DISTINCT FROM 10 ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM cmp_vals WHERE val IS DISTINCT FROM 10 ORDER BY id",
+    );
     defer result.close(allocator);
 
     var count: usize = 0;
@@ -37103,7 +39857,9 @@ test "IS DISTINCT FROM: with both operands NULL via expressions" {
     defer db.close();
 
     // Both operands evaluate to NULL
-    var result = try db.execSQL("SELECT CAST(NULL AS INTEGER) IS DISTINCT FROM CAST(NULL AS INTEGER) as result");
+    var result = try db.execSQL(
+        "SELECT CAST(NULL AS INTEGER) IS DISTINCT FROM CAST(NULL AS INTEGER) as result",
+    );
     defer result.close(allocator);
     if (try result.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
@@ -37122,7 +39878,9 @@ test "IS NOT DISTINCT FROM: with both operands NULL via expressions" {
     defer db.close();
 
     // Both operands evaluate to NULL
-    var result = try db.execSQL("SELECT CAST(NULL AS INTEGER) IS NOT DISTINCT FROM CAST(NULL AS INTEGER) as result");
+    var result = try db.execSQL(
+        "SELECT CAST(NULL AS INTEGER) IS NOT DISTINCT FROM CAST(NULL AS INTEGER) as result",
+    );
     defer result.close(allocator);
     if (try result.rows.?.next()) |*row_ptr| {
         var row = row_ptr.*;
@@ -37268,7 +40026,10 @@ test "WHERE EXISTS: filters rows based on subquery" {
     _ = try db.execSQL("INSERT INTO orders VALUES (1, 100), (1, 200), (2, 150)");
 
     // Select users who have orders
-    var result = try db.execSQL("SELECT id FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id) ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = " ++
+            "users.id) ORDER BY id",
+    );
     defer result.close(allocator);
 
     var count: usize = 0;
@@ -37320,7 +40081,9 @@ test "NOT IN (subquery): excludes rows from subquery result" {
     _ = try db.execSQL("INSERT INTO t1 VALUES (1), (2), (3), (4), (5)");
     _ = try db.execSQL("INSERT INTO t2 VALUES (2), (4)");
 
-    var result = try db.execSQL("SELECT id FROM t1 WHERE id NOT IN (SELECT id FROM t2) ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM t1 WHERE id NOT IN (SELECT id FROM t2) ORDER BY id",
+    );
     defer result.close(allocator);
 
     var count: usize = 0;
@@ -37354,7 +40117,7 @@ test "scalar subquery in arithmetic expression" {
     }
 }
 
-// ── SELECT FOR UPDATE / FOR SHARE Integration Tests ──────────────────────
+// ── SELECT FOR UPDATE / FOR SHARE Integration Tests ──────────────
 
 test "SELECT FOR UPDATE acquires exclusive row locks" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -37574,7 +40337,10 @@ test "SELECT FOR UPDATE OF table locks only specified table in JOIN" {
 
     // Start transaction and run SELECT with FOR UPDATE OF specific table
     try db.beginTransaction(.read_committed);
-    var result = try db.execSQL("SELECT o.order_id, c.name FROM orders o JOIN customers c ON o.customer_id = c.customer_id FOR UPDATE OF orders");
+    var result = try db.execSQL(
+        "SELECT o.order_id, c.name FROM orders o JOIN customers c ON o.customer_id = " ++
+            "c.customer_id FOR UPDATE OF orders",
+    );
     defer result.close(allocator);
 
     // Consume the result
@@ -37621,7 +40387,10 @@ test "SELECT FOR UPDATE returns rows correctly and acquires locks" {
     // Collect all returned ids and names
     var returned_ids: std.ArrayList(i64) = try std.ArrayList(i64).initCapacity(allocator, 3);
     defer returned_ids.deinit(allocator);
-    var returned_names: std.ArrayList([]const u8) = try std.ArrayList([]const u8).initCapacity(allocator, 3);
+    var returned_names: std.ArrayList([]const u8) = try std.ArrayList([]const u8).initCapacity(
+        allocator,
+        3,
+    );
     defer {
         for (returned_names.items) |name| {
             allocator.free(name);
@@ -38375,7 +41144,9 @@ test "MERGE: with conditional WHEN MATCHED clause filters correctly" {
     }
 
     {
-        var r = try db.execSQL("INSERT INTO t VALUES (1, 'active', 10), (2, 'inactive', 20), (3, 'active', 30)");
+        var r = try db.execSQL(
+            "INSERT INTO t VALUES (1, 'active', 10), (2, 'inactive', 20), (3, 'active', 30)",
+        );
         defer r.close(testing.allocator);
     }
 
@@ -38447,7 +41218,9 @@ test "MERGE DELETE action: rows_affected count is accurate" {
     }
 
     {
-        var r = try db.execSQL("INSERT INTO t VALUES (1, 'A'), (2, 'B'), (3, 'A'), (4, 'C'), (5, 'A')");
+        var r = try db.execSQL(
+            "INSERT INTO t VALUES (1, 'A'), (2, 'B'), (3, 'A'), (4, 'C'), (5, 'A')",
+        );
         defer r.close(testing.allocator);
     }
 
@@ -38619,7 +41392,10 @@ test "VALUES table expr: with WHERE filter" {
     var db = try Database.open(allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.execSQL("SELECT id FROM (VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')) AS t(id, name) WHERE id > 1");
+    var r = try db.execSQL(
+        "SELECT id FROM (VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')) AS t(id, name) " ++
+            "WHERE id > 1",
+    );
     defer r.close(allocator);
 
     var row_count: usize = 0;
@@ -38728,7 +41504,10 @@ test "VALUES table expr: JOIN with real table" {
     }
 
     // JOIN employees with VALUES table
-    var r = try db.execSQL("SELECT e.id, e.dept, v.bonus FROM employees e JOIN (VALUES (1, 100), (2, 200)) AS v(id, bonus) ON e.id = v.id");
+    var r = try db.execSQL(
+        "SELECT e.id, e.dept, v.bonus FROM employees e JOIN (VALUES (1, 100), (2, 200)) " ++
+            "AS v(id, bonus) ON e.id = v.id",
+    );
     defer r.close(std.testing.allocator);
 
     var row_count: usize = 0;
@@ -38779,7 +41558,9 @@ test "VALUES table expr: NULL in values" {
     var db = try Database.open(allocator, ":memory:", .{});
     defer db.close();
 
-    var r = try db.execSQL("SELECT id, val FROM (VALUES (1, NULL), (2, 'hi'), (3, NULL)) AS t(id, val)");
+    var r = try db.execSQL(
+        "SELECT id, val FROM (VALUES (1, NULL), (2, 'hi'), (3, NULL)) AS t(id, val)",
+    );
     defer r.close(allocator);
 
     var row_count: usize = 0;
@@ -38799,11 +41580,11 @@ test "VALUES table expr: NULL in values" {
     try testing.expectEqual(@as(usize, 3), row_count);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 // System Information Functions: version, current_user, current_schema,
 // current_database, clock_timestamp, txid_current, num_nulls, num_nonnulls,
 // setseed, pg_table_size, pg_total_relation_size, pg_database_size
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────
 
 test "version() returns Silica version string in SELECT" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -39215,7 +41996,7 @@ test "pg_database_size returns positive integer" {
     }
 }
 
-// ── Trigger Execution Tests (Phase 5 — Advanced SQL) ────────────────────
+// ── Trigger Execution Tests (Phase 5 — Advanced SQL) ─────────────
 // These tests verify that triggers actually FIRE and EXECUTE when DML occurs.
 // Currently marked as failing because trigger execution is not yet implemented.
 
@@ -39228,7 +42009,11 @@ test "trigger: AFTER INSERT ROW trigger fires and executes body SQL" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_after_insert_row.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_after_insert_row.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -39279,7 +42064,11 @@ test "trigger: AFTER DELETE ROW trigger fires on DELETE" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_after_delete_row.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_after_delete_row.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -39334,7 +42123,11 @@ test "trigger: AFTER UPDATE ROW trigger fires on UPDATE" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_after_update_row.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_after_update_row.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -39561,7 +42354,11 @@ test "trigger: AFTER INSERT STATEMENT trigger fires once for multi-row insert" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_statement_level.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_statement_level.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -39585,7 +42382,9 @@ test "trigger: AFTER INSERT STATEMENT trigger fires once for multi-row insert" {
     try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
 
     // Insert 3 rows — trigger should fire ONCE (statement-level), not 3 times
-    var r4 = try db.exec("INSERT INTO events (id, name) VALUES (1, 'Iris'), (2, 'Jack'), (3, 'Kate')");
+    var r4 = try db.exec(
+        "INSERT INTO events (id, name) VALUES (1, 'Iris'), (2, 'Jack'), (3, 'Kate')",
+    );
     defer r4.close(testing.allocator);
 
     // Verify the trigger fired ONCE by checking audit_log has exactly 1 entry
@@ -39716,7 +42515,11 @@ test "TRIGGER WHEN condition with arithmetic" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_arithmetic.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_when_arithmetic.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -39961,7 +42764,9 @@ test "RLS UPDATE USING — only updates rows matching policy" {
     defer db.close();
 
     // Create table with category and price
-    var r1 = try db.exec("CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, price INTEGER)");
+    var r1 = try db.exec(
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, price INTEGER)",
+    );
     defer r1.close(allocator);
 
     // Insert test data: mix of 'electronics' and 'clothing' rows
@@ -39975,7 +42780,9 @@ test "RLS UPDATE USING — only updates rows matching policy" {
     defer r4.close(allocator);
 
     // Create RLS policy that only allows UPDATE on 'electronics' rows
-    var r5 = try db.exec("CREATE POLICY electronics_only ON products FOR UPDATE USING (category = 'electronics')");
+    var r5 = try db.exec(
+        "CREATE POLICY electronics_only ON products FOR UPDATE USING (category = 'electronics')",
+    );
     defer r5.close(allocator);
 
     // Enable RLS on the table
@@ -40032,17 +42839,25 @@ test "RLS INSERT WITH CHECK — blocks violating inserts" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rls_insert_with_check_block.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_rls_insert_with_check_block.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
 
     // Create table with salary column
-    var r1 = try db.exec("CREATE TABLE employees (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)");
+    var r1 = try db.exec(
+        "CREATE TABLE employees (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)",
+    );
     defer r1.close(allocator);
 
     // Create RLS policy with WITH CHECK to enforce salary <= 100000
-    var r2 = try db.exec("CREATE POLICY salary_cap ON employees FOR INSERT WITH CHECK (salary <= 100000)");
+    var r2 = try db.exec(
+        "CREATE POLICY salary_cap ON employees FOR INSERT WITH CHECK (salary <= 100000)",
+    );
     defer r2.close(allocator);
 
     // Enable RLS on the table
@@ -40085,17 +42900,25 @@ test "RLS INSERT WITH CHECK — allows valid inserts" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_rls_insert_with_check_allow.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_rls_insert_with_check_allow.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(allocator, path, .{});
     defer db.close();
 
     // Create table with salary column
-    var r1 = try db.exec("CREATE TABLE employees (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)");
+    var r1 = try db.exec(
+        "CREATE TABLE employees (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)",
+    );
     defer r1.close(allocator);
 
     // Create RLS policy with WITH CHECK to enforce salary <= 100000
-    var r2 = try db.exec("CREATE POLICY salary_cap ON employees FOR INSERT WITH CHECK (salary <= 100000)");
+    var r2 = try db.exec(
+        "CREATE POLICY salary_cap ON employees FOR INSERT WITH CHECK (salary <= 100000)",
+    );
     defer r2.close(allocator);
 
     // Enable RLS on the table
@@ -40131,7 +42954,7 @@ test "RLS INSERT WITH CHECK — allows valid inserts" {
     try testing.expectEqual(@as(i64, 1), count);
 }
 
-// ── json_object_agg Integration Tests ───────────────────────────────────────
+// ── json_object_agg Integration Tests ──────────────────
 
 test "json_object_agg: basic aggregation of text key and integer value" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -40226,7 +43049,9 @@ test "json_object_agg: with GROUP BY produces per-group objects" {
     _ = try db.exec("CREATE TABLE props (cat TEXT, k TEXT, v INTEGER)");
     _ = try db.exec("INSERT INTO props VALUES ('A', 'x', 1), ('A', 'y', 2), ('B', 'p', 9)");
 
-    var r = try db.exec("SELECT cat, json_object_agg(k, v) AS obj FROM props GROUP BY cat ORDER BY cat");
+    var r = try db.exec(
+        "SELECT cat, json_object_agg(k, v) AS obj FROM props GROUP BY cat ORDER BY cat",
+    );
     defer r.close(allocator);
 
     var count: usize = 0;
@@ -40364,9 +43189,14 @@ test "string_agg with GROUP BY and ORDER BY produces ordered per-group concatena
     defer db.close();
 
     _ = try db.exec("CREATE TABLE items (cat TEXT, item TEXT)");
-    _ = try db.exec("INSERT INTO items VALUES ('A', 'zebra'), ('A', 'apple'), ('A', 'mango'), ('B', 'xray'), ('B', 'beta')");
+    _ = try db.exec(
+        "INSERT INTO items VALUES ('A', 'zebra'), ('A', 'apple'), ('A', 'mango'), ('B', " ++
+            "'xray'), ('B', 'beta')",
+    );
 
-    var r = try db.exec("SELECT cat, string_agg(item, ',' ORDER BY item) FROM items GROUP BY cat ORDER BY cat");
+    var r = try db.exec(
+        "SELECT cat, string_agg(item, ',' ORDER BY item) FROM items GROUP BY cat ORDER BY cat",
+    );
     defer r.close(allocator);
 
     var count: usize = 0;
@@ -40441,7 +43271,9 @@ test "string_agg with FILTER and ORDER BY combines both clauses" {
     _ = try db.exec("CREATE TABLE filtered (val TEXT, keep INTEGER)");
     _ = try db.exec("INSERT INTO filtered VALUES ('z', 0), ('a', 1), ('m', 1), ('b', 0)");
 
-    var r = try db.exec("SELECT string_agg(val, ',' ORDER BY val) FILTER (WHERE keep = 1) FROM filtered");
+    var r = try db.exec(
+        "SELECT string_agg(val, ',' ORDER BY val) FILTER (WHERE keep = 1) FROM filtered",
+    );
     defer r.close(allocator);
 
     if (try r.rows.?.next()) |*row_ptr| {
@@ -40481,7 +43313,10 @@ test "string_agg ORDER BY multiple columns (compound sort key)" {
     defer db.close();
 
     _ = try db.exec("CREATE TABLE multi_sort (id INTEGER, cat TEXT, name TEXT)");
-    _ = try db.exec("INSERT INTO multi_sort VALUES (1, 'B', 'zebra'), (2, 'A', 'charlie'), (3, 'A', 'alice'), (4, 'B', 'beta')");
+    _ = try db.exec(
+        "INSERT INTO multi_sort VALUES (1, 'B', 'zebra'), (2, 'A', 'charlie'), (3, 'A', " ++
+            "'alice'), (4, 'B', 'beta')",
+    );
 
     var r = try db.exec("SELECT string_agg(name, ',' ORDER BY cat, name) FROM multi_sort");
     defer r.close(allocator);
@@ -40546,7 +43381,9 @@ test "json_agg ORDER BY with GROUP BY: per-group ordered arrays" {
     _ = try db.exec("CREATE TABLE grouped_agg (cat TEXT, val INTEGER)");
     _ = try db.exec("INSERT INTO grouped_agg VALUES ('X', 30), ('Y', 20), ('X', 10), ('Y', 40)");
 
-    var r = try db.exec("SELECT cat, json_agg(val ORDER BY val) FROM grouped_agg GROUP BY cat ORDER BY cat");
+    var r = try db.exec(
+        "SELECT cat, json_agg(val ORDER BY val) FROM grouped_agg GROUP BY cat ORDER BY cat",
+    );
     defer r.close(allocator);
 
     var count: usize = 0;
@@ -40569,7 +43406,7 @@ test "json_agg ORDER BY with GROUP BY: per-group ordered arrays" {
     try testing.expectEqual(@as(usize, 2), count);
 }
 
-// ── COPY statement for bulk CSV import/export ──────────────────────────
+// ── COPY statement for bulk CSV import/export ────────────────
 
 test "COPY FROM basic CSV import without header" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -40638,7 +43475,11 @@ test "COPY FROM with HEADER skips first line" {
 
     // COPY FROM with HEADER option
     var sql_buf: [768]u8 = undefined;
-    const sql = try std.fmt.bufPrint(&sql_buf, "COPY products FROM '{s}' WITH (HEADER)", .{csv_path});
+    const sql = try std.fmt.bufPrint(
+        &sql_buf,
+        "COPY products FROM '{s}' WITH (HEADER)",
+        .{csv_path},
+    );
     var r2 = try db.execSQL(sql);
     defer r2.close(testing.allocator);
 
@@ -40664,7 +43505,11 @@ test "COPY FROM with custom DELIMITER" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_delimiter.db", .{dir_path});
     var csv_path_buf: [512]u8 = undefined;
-    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_delimiter.csv", .{dir_path});
+    const csv_path = try std.fmt.bufPrint(
+        &csv_path_buf,
+        "{s}/test_copy_delimiter.csv",
+        .{dir_path},
+    );
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -40679,7 +43524,11 @@ test "COPY FROM with custom DELIMITER" {
 
     // COPY FROM with custom delimiter
     var sql_buf: [768]u8 = undefined;
-    const sql = try std.fmt.bufPrint(&sql_buf, "COPY data FROM '{s}' WITH (DELIMITER '|')", .{csv_path});
+    const sql = try std.fmt.bufPrint(
+        &sql_buf,
+        "COPY data FROM '{s}' WITH (DELIMITER '|')",
+        .{csv_path},
+    );
     var r2 = try db.execSQL(sql);
     defer r2.close(testing.allocator);
 
@@ -40754,7 +43603,11 @@ test "COPY TO with HEADER includes column names" {
     var path_buf: [512]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/test_copy_to_header.db", .{dir_path});
     var csv_path_buf: [512]u8 = undefined;
-    const csv_path = try std.fmt.bufPrint(&csv_path_buf, "{s}/test_copy_to_header.csv", .{dir_path});
+    const csv_path = try std.fmt.bufPrint(
+        &csv_path_buf,
+        "{s}/test_copy_to_header.csv",
+        .{dir_path},
+    );
 
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
@@ -40807,7 +43660,10 @@ test "COPY (query) TO exports query result subset" {
     var r1 = try db.execSQL("CREATE TABLE orders (id INTEGER, status TEXT, amount REAL)");
     defer r1.close(testing.allocator);
 
-    var r2 = try db.execSQL("INSERT INTO orders VALUES (1, 'completed', 100.0), (2, 'pending', 200.0), (3, 'completed', 150.0)");
+    var r2 = try db.execSQL(
+        "INSERT INTO orders VALUES (1, 'completed', 100.0), (2, 'pending', 200.0), (3, " ++
+            "'completed', 150.0)",
+    );
     defer r2.close(testing.allocator);
 
     // COPY (SELECT ...) TO export only completed orders
@@ -41011,7 +43867,11 @@ test "ALTER COLUMN DROP NOT NULL removes constraint" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_drop_not_null.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_alter_col_drop_not_null.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41043,7 +43903,11 @@ test "ALTER COLUMN SET DEFAULT with string literal" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_string_default.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_alter_col_string_default.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41073,7 +43937,11 @@ test "ALTER COLUMN SET DEFAULT persists across reopen" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_alter_col_persist_default.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_alter_col_persist_default.db",
+        .{dir_path},
+    );
 
     // First session: create table, set default
     {
@@ -41118,7 +43986,11 @@ test "trigger WHEN (NEW.col > threshold) fires only when condition true on INSER
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_new_col_insert.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_when_new_col_insert.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -41174,7 +44046,11 @@ test "trigger WHEN (OLD.status != NEW.status) fires only on UPDATE change" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_old_new_update.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_when_old_new_update.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -41234,7 +44110,11 @@ test "trigger WHEN (OLD.amount < 0) fires on DELETE with OLD row reference" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_old_col_delete.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_when_old_col_delete.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -41293,7 +44173,11 @@ test "trigger WHEN (NEW.col < 0) condition false suppresses INSERT trigger" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_new_col_false.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_when_new_col_false.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -41351,7 +44235,11 @@ test "trigger WHEN (NEW.col >= 0 AND NEW.col <= 50) compound condition on INSERT
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_when_new_compound.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_when_new_compound.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -41419,7 +44307,11 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - basic" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_update.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_merge_not_matched_by_source_update.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41431,7 +44323,9 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - basic" {
 
     // Insert target rows: all initially 'active'
     {
-        var r = try db.execSQL("INSERT INTO target VALUES (1, 'active'), (2, 'active'), (3, 'active')");
+        var r = try db.execSQL(
+            "INSERT INTO target VALUES (1, 'active'), (2, 'active'), (3, 'active')",
+        );
         defer r.close(testing.allocator);
     }
 
@@ -41494,7 +44388,11 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - uses target column value i
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_update_expr.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_merge_not_matched_by_source_update_expr.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41569,7 +44467,11 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN DELETE - verifies delete still work
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_delete.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_merge_not_matched_by_source_delete.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41632,7 +44534,11 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE THEN UPDATE - empty source updates all" 
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_empty_source.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_merge_not_matched_by_source_empty_source.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41689,7 +44595,11 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE AND condition THEN DELETE - filters corr
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_and_delete.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_merge_not_matched_by_source_and_delete.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41718,7 +44628,8 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE AND condition THEN DELETE - filters corr
     }
 
     // MERGE: delete unmatched rows WHERE score > 40
-    // Expected: id=3 (score=90) deleted; id=1 (score=10), id=4 (score=30) remain; id=2 matched so unchanged
+    // Expected: id=3 (score=90) deleted; id=1 (score=10), id=4 (score=30) remain; id=2 matched so
+    // unchanged
     {
         var r = try db.execSQL(
             \\MERGE INTO target t
@@ -41776,19 +44687,27 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE AND condition THEN UPDATE - conditional 
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_and_update.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_merge_not_matched_by_source_and_update.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create target table with id, val, and flag
     {
-        var r = try db.execSQL("CREATE TABLE target (id INTEGER PRIMARY KEY, val INTEGER, flag INTEGER)");
+        var r = try db.execSQL(
+            "CREATE TABLE target (id INTEGER PRIMARY KEY, val INTEGER, flag INTEGER)",
+        );
         defer r.close(testing.allocator);
     }
 
     // Insert target rows with varying values
     {
-        var r = try db.execSQL("INSERT INTO target VALUES (1, 100, 0), (2, 200, 0), (3, 50, 0), (4, 150, 0)");
+        var r = try db.execSQL(
+            "INSERT INTO target VALUES (1, 100, 0), (2, 200, 0), (3, 50, 0), (4, 150, 0)",
+        );
         defer r.close(testing.allocator);
     }
 
@@ -41861,7 +44780,11 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE - multiple clauses with conditions" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_merge_not_matched_by_source_multiple_conditions.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_merge_not_matched_by_source_multiple_conditions.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -41898,7 +44821,8 @@ test "MERGE: WHEN NOT MATCHED BY SOURCE - multiple clauses with conditions" {
             \\MERGE INTO target t
             \\USING source s ON t.id = s.id
             \\WHEN NOT MATCHED BY SOURCE AND priority > 60 THEN DELETE
-            \\WHEN NOT MATCHED BY SOURCE AND priority <= 60 THEN UPDATE SET priority = priority + 100
+            \\WHEN NOT MATCHED BY SOURCE AND priority <= 60 THEN UPDATE SET priority = priority +
+            \\100
         );
         defer r.close(testing.allocator);
         // 1 delete (id=3) + 2 updates (id=1, id=4) = 3 rows affected
@@ -41969,13 +44893,17 @@ test "FETCH FIRST n ROWS WITH TIES — basic, returns tied rows at boundary" {
     }
 
     {
-        var r = try db.execSQL("INSERT INTO scores VALUES ('alice', 100), ('bob', 90), ('charlie', 90), ('dave', 85)");
+        var r = try db.execSQL(
+            "INSERT INTO scores VALUES ('alice', 100), ('bob', 90), ('charlie', 90), ('dave', 85)",
+        );
         defer r.close(testing.allocator);
     }
 
     // Query: FETCH FIRST 2 ROWS WITH TIES
     // Expected: 3 rows (alice=100, bob=90, charlie=90) because bob and charlie tie
-    var result = try db.execSQL("SELECT name, score FROM scores ORDER BY score DESC FETCH FIRST 2 ROWS WITH TIES");
+    var result = try db.execSQL(
+        "SELECT name, score FROM scores ORDER BY score DESC FETCH FIRST 2 ROWS WITH TIES",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -42031,13 +44959,17 @@ test "FETCH FIRST n ROWS WITH TIES — no tie at boundary, returns exactly n row
     }
 
     {
-        var r = try db.execSQL("INSERT INTO scores2 VALUES ('alice', 100), ('bob', 90), ('charlie', 80)");
+        var r = try db.execSQL(
+            "INSERT INTO scores2 VALUES ('alice', 100), ('bob', 90), ('charlie', 80)",
+        );
         defer r.close(testing.allocator);
     }
 
     // Query: FETCH FIRST 2 ROWS WITH TIES
     // Expected: 2 rows (alice=100, bob=90) because charlie is distinctly lower
-    var result = try db.execSQL("SELECT name FROM scores2 ORDER BY score DESC FETCH FIRST 2 ROWS WITH TIES");
+    var result = try db.execSQL(
+        "SELECT name FROM scores2 ORDER BY score DESC FETCH FIRST 2 ROWS WITH TIES",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -42088,13 +45020,17 @@ test "FETCH FIRST n ROWS WITH TIES — all remaining rows tie" {
     }
 
     {
-        var r = try db.execSQL("INSERT INTO scores3 VALUES ('a', 50), ('b', 50), ('c', 50), ('d', 50)");
+        var r = try db.execSQL(
+            "INSERT INTO scores3 VALUES ('a', 50), ('b', 50), ('c', 50), ('d', 50)",
+        );
         defer r.close(testing.allocator);
     }
 
     // Query: FETCH FIRST 1 ROWS WITH TIES
     // Expected: all 4 rows because they all tie at score=50
-    var result = try db.execSQL("SELECT name FROM scores3 ORDER BY score ASC FETCH FIRST 1 ROWS WITH TIES");
+    var result = try db.execSQL(
+        "SELECT name FROM scores3 ORDER BY score ASC FETCH FIRST 1 ROWS WITH TIES",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -42136,7 +45072,9 @@ test "FETCH FIRST 1 ROWS WITH TIES — single row with no tie" {
 
     // Query: FETCH FIRST 1 ROWS WITH TIES
     // Expected: 1 row (alice only, no tie at position 1)
-    var result = try db.execSQL("SELECT name FROM scores4 ORDER BY score DESC FETCH FIRST 1 ROWS WITH TIES");
+    var result = try db.execSQL(
+        "SELECT name FROM scores4 ORDER BY score DESC FETCH FIRST 1 ROWS WITH TIES",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -42180,13 +45118,18 @@ test "FETCH FIRST n ROWS WITH TIES — with NULL values and NULLS LAST" {
     }
 
     {
-        var r = try db.execSQL("INSERT INTO scores5 VALUES ('alice', 100), ('bob', NULL), ('charlie', NULL), ('dave', 50)");
+        var r = try db.execSQL(
+            "INSERT INTO scores5 VALUES ('alice', 100), ('bob', NULL), ('charlie', " ++
+                "NULL), ('dave', 50)",
+        );
         defer r.close(testing.allocator);
     }
 
     // Query: FETCH FIRST 1 ROWS WITH TIES with NULLS LAST
     // Expected: 1 row (alice=100, no tie at position 1)
-    var result = try db.execSQL("SELECT name FROM scores5 ORDER BY score DESC NULLS LAST FETCH FIRST 1 ROWS WITH TIES");
+    var result = try db.execSQL(
+        "SELECT name FROM scores5 ORDER BY score DESC NULLS LAST FETCH FIRST 1 ROWS WITH TIES",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -42219,13 +45162,19 @@ test "trigger: UPDATE OF salary fires when salary column is updated" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_update_of_salary.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_update_of_salary.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
     // Create the employees table
-    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    var r1 = try db.exec(
+        "CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)",
+    );
     defer r1.close(testing.allocator);
 
     // Create the audit_log table
@@ -42243,7 +45192,9 @@ test "trigger: UPDATE OF salary fires when salary column is updated" {
     try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
 
     // Insert a row
-    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    var r4 = try db.exec(
+        "INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')",
+    );
     defer r4.close(testing.allocator);
 
     // Update the salary column — should fire the UPDATE OF salary trigger
@@ -42274,13 +45225,19 @@ test "trigger: UPDATE OF salary suppressed when only name column is updated" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_update_of_salary_suppressed.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_update_of_salary_suppressed.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
     // Create the employees table
-    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    var r1 = try db.exec(
+        "CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)",
+    );
     defer r1.close(testing.allocator);
 
     // Create the audit_log table
@@ -42298,7 +45255,9 @@ test "trigger: UPDATE OF salary suppressed when only name column is updated" {
     try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
 
     // Insert a row
-    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    var r4 = try db.exec(
+        "INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')",
+    );
     defer r4.close(testing.allocator);
 
     // Update the name column (not salary) — should NOT fire the UPDATE OF salary trigger
@@ -42329,13 +45288,19 @@ test "trigger: UPDATE OF (multiple columns) fires when any specified column is u
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_update_of_multiple.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_update_of_multiple.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
     // Create the employees table
-    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    var r1 = try db.exec(
+        "CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)",
+    );
     defer r1.close(testing.allocator);
 
     // Create the audit_log table
@@ -42353,7 +45318,9 @@ test "trigger: UPDATE OF (multiple columns) fires when any specified column is u
     try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
 
     // Insert a row
-    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    var r4 = try db.exec(
+        "INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')",
+    );
     defer r4.close(testing.allocator);
 
     // Update the salary column (one of the specified columns) — should fire
@@ -42384,20 +45351,27 @@ test "trigger: UPDATE OF (multiple columns) suppressed when no specified column 
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_trigger_update_of_multiple_suppressed.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_trigger_update_of_multiple_suppressed.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
     // Create the employees table
-    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    var r1 = try db.exec(
+        "CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)",
+    );
     defer r1.close(testing.allocator);
 
     // Create the audit_log table
     var r2 = try db.exec("CREATE TABLE log (msg TEXT)");
     defer r2.close(testing.allocator);
 
-    // Create a trigger: AFTER UPDATE OF salary, dept — should fire ONLY when those columns are updated
+    // Create a trigger: AFTER UPDATE OF salary, dept — should fire ONLY when those columns are
+    // updated
     var r3 = try db.exec(
         \\CREATE TRIGGER on_salary_or_dept_update
         \\AFTER UPDATE OF salary, dept ON employees
@@ -42408,7 +45382,9 @@ test "trigger: UPDATE OF (multiple columns) suppressed when no specified column 
     try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
 
     // Insert a row
-    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    var r4 = try db.exec(
+        "INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')",
+    );
     defer r4.close(testing.allocator);
 
     // Update the name column (not salary or dept) — should NOT fire the trigger
@@ -42445,14 +45421,17 @@ test "trigger: Regular AFTER UPDATE (without UPDATE OF) fires for all updates" {
     defer db.close();
 
     // Create the employees table
-    var r1 = try db.exec("CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)");
+    var r1 = try db.exec(
+        "CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER, dept TEXT)",
+    );
     defer r1.close(testing.allocator);
 
     // Create the audit_log table
     var r2 = try db.exec("CREATE TABLE log (msg TEXT)");
     defer r2.close(testing.allocator);
 
-    // Create a regular trigger: AFTER UPDATE ON (no UPDATE OF clause) — should fire for ANY update
+    // Create a regular trigger: AFTER UPDATE ON (no UPDATE OF clause) — should fire for ANY
+    // update
     var r3 = try db.exec(
         \\CREATE TRIGGER on_any_update
         \\AFTER UPDATE ON employees
@@ -42463,7 +45442,9 @@ test "trigger: Regular AFTER UPDATE (without UPDATE OF) fires for all updates" {
     try testing.expectEqualStrings("CREATE TRIGGER", r3.message);
 
     // Insert a row
-    var r4 = try db.exec("INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')");
+    var r4 = try db.exec(
+        "INSERT INTO employees (id, name, salary, dept) VALUES (1, 'Alice', 50000, 'Engineering')",
+    );
     defer r4.close(testing.allocator);
 
     // Update the name column — regular AFTER UPDATE (without OF) should still fire
@@ -42817,7 +45798,11 @@ test "GIN native storage — array_ops INSERT populates native GIN posting list"
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_array_native_insert.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_gin_array_native_insert.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42862,7 +45847,12 @@ test "GIN native storage — array_ops INSERT populates native GIN posting list"
     const GIN = gin_index_mod.GIN;
     const ArrayOpsOpClass = gin_index_mod.ArrayOpsOpClass;
 
-    var gin = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+    var gin = try GIN.init(
+        testing.allocator,
+        db.pool,
+        idx.root_page_id,
+        ArrayOpsOpClass.getOpClass(),
+    );
 
     const results = try gin.search(&query_buf, 0);
     defer testing.allocator.free(results);
@@ -42902,7 +45892,12 @@ test "GIN native storage — array_ops multi-key fan-out (1 row → 3 entries)" 
     const GIN = gin_index_mod.GIN;
     const ArrayOpsOpClass = gin_index_mod.ArrayOpsOpClass;
 
-    var gin = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+    var gin = try GIN.init(
+        testing.allocator,
+        db.pool,
+        idx.root_page_id,
+        ArrayOpsOpClass.getOpClass(),
+    );
 
     // Search for each element separately; each should find row 1
     // Element 10
@@ -42948,7 +45943,11 @@ test "GIN native storage — jsonb_ops INSERT populates native GIN posting list"
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_jsonb_native_insert.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_gin_jsonb_native_insert.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -42961,7 +45960,9 @@ test "GIN native storage — jsonb_ops INSERT populates native GIN posting list"
     defer r2.close(testing.allocator);
 
     // Insert a row with a jsonb value
-    var r3 = try db.execSQL("INSERT INTO configs (id, data) VALUES (1, CAST('{\"key\": \"value\"}' AS JSONB))");
+    var r3 = try db.execSQL(
+        "INSERT INTO configs (id, data) VALUES (1, CAST('{\"key\": \"value\"}' AS JSONB))",
+    );
     defer r3.close(testing.allocator);
 
     // Verify row exists
@@ -42984,7 +45985,12 @@ test "GIN native storage — jsonb_ops INSERT populates native GIN posting list"
     const GIN = gin_index_mod.GIN;
     const JsonbOpsOpClass = gin_index_mod.JsonbOpsOpClass;
 
-    var gin = try GIN.init(testing.allocator, db.pool, idx.root_page_id, JsonbOpsOpClass.getOpClass());
+    var gin = try GIN.init(
+        testing.allocator,
+        db.pool,
+        idx.root_page_id,
+        JsonbOpsOpClass.getOpClass(),
+    );
 
     // Construct query for the full JSON document (wire format: tag 0x03 + u32 len + bytes)
     // Query with the same document that was inserted to test @> containment
@@ -43009,7 +46015,11 @@ test "GIN native storage — tsvector_ops INSERT verifies opclass and GIN search
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_tsvector_native_insert.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_gin_tsvector_native_insert.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -43085,7 +46095,12 @@ test "GIN native storage — DELETE removes from array_ops posting list" {
     const ArrayOpsOpClass = gin_index_mod.ArrayOpsOpClass;
 
     // Before delete: search for key=10 should find row 1
-    var gin1 = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+    var gin1 = try GIN.init(
+        testing.allocator,
+        db.pool,
+        idx.root_page_id,
+        ArrayOpsOpClass.getOpClass(),
+    );
 
     var query1: [1 + 4 + 1 + 8]u8 = undefined;
     query1[0] = 0x0C;
@@ -43102,14 +46117,24 @@ test "GIN native storage — DELETE removes from array_ops posting list" {
     defer r5.close(testing.allocator);
 
     // After delete: search for key=10 should find nothing
-    var gin2 = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+    var gin2 = try GIN.init(
+        testing.allocator,
+        db.pool,
+        idx.root_page_id,
+        ArrayOpsOpClass.getOpClass(),
+    );
 
     const results2 = try gin2.search(&query1, 0);
     defer testing.allocator.free(results2);
     try testing.expectEqual(@as(usize, 0), results2.len);
 
     // Search for key=20 should still find row 2
-    var gin3 = try GIN.init(testing.allocator, db.pool, idx.root_page_id, ArrayOpsOpClass.getOpClass());
+    var gin3 = try GIN.init(
+        testing.allocator,
+        db.pool,
+        idx.root_page_id,
+        ArrayOpsOpClass.getOpClass(),
+    );
 
     var query2: [1 + 4 + 1 + 8]u8 = undefined;
     query2[0] = 0x0C;
@@ -43122,7 +46147,7 @@ test "GIN native storage — DELETE removes from array_ops posting list" {
     try testing.expectEqual(@as(usize, 1), results3.len);
 }
 
-// ── GinIndexScanOp Tests (Step 6 of GIN Native Storage Wiring) ──────────────
+// ── GinIndexScanOp Tests (Step 6 of GIN Native Storage Wiring) ──────────
 // Tests for the GinIndexScanOp executor operator: Scans GIN indexes via native
 // posting list search, returning multiple matching rows instead of single index lookup.
 // Tests verify: basic single/multiple matches, no-match cases, MVCC visibility filtering,
@@ -43174,7 +46199,8 @@ test "GinIndexScanOp basic single match — returns matching row" {
     const idx = table_info.findIndex("labels").?;
     const data_root = table_info.data_root_page_id;
 
-    // Build wire-format query for searching element 10: tag 0x0C array + count 1 + tag 0x01 int + value 10
+    // Build wire-format query for searching element 10: tag 0x0C array + count 1 + tag 0x01 int +
+    // value 10
     var query_buf: [1 + 4 + 1 + 8]u8 = undefined;
     query_buf[0] = 0x0C; // array tag
     std.mem.writeInt(u32, query_buf[1..5], 1, .little); // count = 1
@@ -43487,7 +46513,11 @@ test "GinIndexScanOp strategy 1 (overlaps/OR) — returns union of matches" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_indexscan_strategy1.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_gin_indexscan_strategy1.db",
+        .{dir_path},
+    );
 
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
@@ -43683,7 +46713,9 @@ test "TABLESAMPLE BERNOULLI(50) REPEATABLE is deterministic" {
         defer r.close(testing.allocator);
     }
     {
-        var r = try db.execSQL("INSERT INTO t VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10)");
+        var r = try db.execSQL(
+            "INSERT INTO t VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10)",
+        );
         defer r.close(testing.allocator);
     }
 
@@ -43803,7 +46835,8 @@ test "window EXCLUDE CURRENT ROW: SUM excludes current row from running total" {
     _ = try db.exec("INSERT INTO nums VALUES (1),(2),(3),(4)");
 
     var r = try db.exec(
-        "SELECT v, SUM(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) AS s FROM nums ORDER BY v",
+        "SELECT v, SUM(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT " ++
+            "ROW EXCLUDE CURRENT ROW) AS s FROM nums ORDER BY v",
     );
     defer r.close(testing.allocator);
 
@@ -43851,7 +46884,8 @@ test "window EXCLUDE NO OTHERS: explicit — same as default running SUM" {
     _ = try db.exec("INSERT INTO nums VALUES (1),(2),(3)");
 
     var r = try db.exec(
-        "SELECT v, SUM(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE NO OTHERS) AS s FROM nums ORDER BY v",
+        "SELECT v, SUM(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT " ++
+            "ROW EXCLUDE NO OTHERS) AS s FROM nums ORDER BY v",
     );
     defer r.close(testing.allocator);
 
@@ -43887,7 +46921,8 @@ test "window EXCLUDE GROUP: excludes all peers from full-partition frame" {
     _ = try db.exec("INSERT INTO t VALUES (1,10),(1,20),(2,30),(2,40)");
 
     var r = try db.exec(
-        "SELECT g, v, SUM(v) OVER (ORDER BY g ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS s FROM t ORDER BY g, v",
+        "SELECT g, v, SUM(v) OVER (ORDER BY g ROWS BETWEEN UNBOUNDED PRECEDING AND " ++
+            "UNBOUNDED FOLLOWING EXCLUDE GROUP) AS s FROM t ORDER BY g, v",
     );
     defer r.close(testing.allocator);
 
@@ -43937,7 +46972,8 @@ test "window EXCLUDE TIES: excludes peers but not current row" {
     _ = try db.exec("INSERT INTO t VALUES (1,10),(1,20),(2,30)");
 
     var r = try db.exec(
-        "SELECT g, v, SUM(v) OVER (ORDER BY g ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE TIES) AS s FROM t ORDER BY g, v",
+        "SELECT g, v, SUM(v) OVER (ORDER BY g ROWS BETWEEN UNBOUNDED PRECEDING AND " ++
+            "UNBOUNDED FOLLOWING EXCLUDE TIES) AS s FROM t ORDER BY g, v",
     );
     defer r.close(testing.allocator);
 
@@ -43979,7 +47015,8 @@ test "window EXCLUDE CURRENT ROW: COUNT(*) reduces by one per row" {
     _ = try db.exec("INSERT INTO nums VALUES (1),(2),(3)");
 
     var r = try db.exec(
-        "SELECT v, COUNT(*) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) AS c FROM nums ORDER BY v",
+        "SELECT v, COUNT(*) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED PRECEDING AND " ++
+            "CURRENT ROW EXCLUDE CURRENT ROW) AS c FROM nums ORDER BY v",
     );
     defer r.close(testing.allocator);
 
@@ -44025,7 +47062,9 @@ test "SIMILAR TO: basic pattern matching in WHERE clause" {
     defer ins3.close(testing.allocator);
 
     // Test '%an%' pattern — should match 'banana'
-    var result1 = try db.execSQL("SELECT name FROM words WHERE name SIMILAR TO '%an%' ORDER BY name");
+    var result1 = try db.execSQL(
+        "SELECT name FROM words WHERE name SIMILAR TO '%an%' ORDER BY name",
+    );
     defer result1.close(testing.allocator);
 
     var count1: usize = 0;
@@ -44087,7 +47126,9 @@ test "SIMILAR TO: alternation pattern" {
     defer ins3.close(testing.allocator);
 
     // Test 'cat|dog' pattern — should match 'cat' and 'dog'
-    var result = try db.execSQL("SELECT name FROM animals WHERE name SIMILAR TO 'cat|dog' ORDER BY name");
+    var result = try db.execSQL(
+        "SELECT name FROM animals WHERE name SIMILAR TO 'cat|dog' ORDER BY name",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -44190,7 +47231,9 @@ test "SIMILAR TO: character class pattern" {
     defer ins4.close(testing.allocator);
 
     // Test '[a-c][1-3]' pattern — should match 'a1', 'b2', 'c3'
-    var result = try db.execSQL("SELECT code FROM codes WHERE code SIMILAR TO '[a-c][1-3]' ORDER BY code");
+    var result = try db.execSQL(
+        "SELECT code FROM codes WHERE code SIMILAR TO '[a-c][1-3]' ORDER BY code",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -44226,7 +47269,9 @@ test "SIMILAR TO: NOT SIMILAR TO excludes matching rows" {
     defer ins3.close(testing.allocator);
 
     // Test NOT SIMILAR TO 'hel%' — should only match 'world'
-    var result = try db.execSQL("SELECT word FROM words WHERE word NOT SIMILAR TO 'hel%' ORDER BY word");
+    var result = try db.execSQL(
+        "SELECT word FROM words WHERE word NOT SIMILAR TO 'hel%' ORDER BY word",
+    );
     defer result.close(testing.allocator);
 
     var count: usize = 0;
@@ -44372,7 +47417,7 @@ test "SIMILAR TO: grouping and quantifiers" {
     try testing.expect(found_aaa);
 }
 
-// ── ROW constructor integration tests ──────────────────────────────────────────────
+// ── ROW constructor integration tests ──────────────────
 
 test "row constructor: (a, b) = (1, 2) equality" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -44837,7 +47882,9 @@ test "TRUNCATE TABLE preserves schema" {
     defer cleanupTestDb(&db, path);
 
     // Create table with specific schema
-    var r1 = try db.execSQL("CREATE TABLE schema_test (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE schema_test (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
+    );
     defer r1.close(testing.allocator);
 
     // Insert and then truncate
@@ -44875,7 +47922,9 @@ test "TRUNCATE TABLE clears secondary indexes" {
     defer cleanupTestDb(&db, path);
 
     // Create table with unique index
-    var r1 = try db.execSQL("CREATE TABLE indexed_table (id INTEGER PRIMARY KEY, email TEXT UNIQUE)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE indexed_table (id INTEGER PRIMARY KEY, email TEXT UNIQUE)",
+    );
     defer r1.close(testing.allocator);
 
     // Insert row
@@ -44925,7 +47974,7 @@ test "TRUNCATE TABLE non-existent table returns error" {
     try testing.expectError(EngineError.TableNotFound, result);
 }
 
-// ── IS JSON predicate tests (SQL:2016) ──────────────────────────────────────
+// ── IS JSON predicate tests (SQL:2016) ──────────────────
 
 fn expectBooleanResult(db: *Database, sql: []const u8, expected: bool) !void {
     var result = try db.execSQL(sql);
@@ -45082,7 +48131,11 @@ test "PreparedStatement: numbered params can be prepared and executed twice in a
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_prepared_numbered_params_twice.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_prepared_numbered_params_twice.db",
+        .{dir_path},
+    );
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
 
@@ -45138,7 +48191,11 @@ fn concurrentTestWorker(ctx: ConcurrentTestContext) void {
     const statements_per_thread = 20;
 
     for (0..statements_per_thread) |i| {
-        const insert_stmt = std.fmt.allocPrint(ctx.allocator, "INSERT INTO concurrent_test VALUES ({}, 'thread_{}_{}')", .{ thread_id * 1000 + i, thread_id, i }) catch {
+        const insert_stmt = std.fmt.allocPrint(
+            ctx.allocator,
+            "INSERT INTO concurrent_test VALUES ({}, 'thread_{}_{}')",
+            .{ thread_id * 1000 + i, thread_id, i },
+        ) catch {
             _ = ctx.errors.fetchAdd(@as(u32, 1) << @intCast(thread_id), .release);
             return;
         };
@@ -45162,7 +48219,11 @@ test "concurrent multi-threaded SQL execution on shared Database" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_concurrent_sql_execution.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_concurrent_sql_execution.db",
+        .{dir_path},
+    );
 
     var db = try Database.open(testing.allocator, path, .{});
     defer db.close();
@@ -45248,11 +48309,18 @@ test "GIN cutover — jsonb_ops @> uses native GIN scan and excludes non-matchin
     var r2 = try db.execSQL("CREATE INDEX idx_configs_data ON configs (data) USING GIN");
     defer r2.close(testing.allocator);
 
-    var r3 = try db.execSQL("INSERT INTO configs (id, data) VALUES (1, CAST('{\"key\": \"value\"}' AS JSONB))");
+    var r3 = try db.execSQL(
+        "INSERT INTO configs (id, data) VALUES (1, CAST('{\"key\": \"value\"}' AS JSONB))",
+    );
     defer r3.close(testing.allocator);
-    var r4 = try db.execSQL("INSERT INTO configs (id, data) VALUES (2, CAST('{\"other\": \"thing\"}' AS JSONB))");
+    var r4 = try db.execSQL(
+        "INSERT INTO configs (id, data) VALUES (2, CAST('{\"other\": \"thing\"}' AS JSONB))",
+    );
     defer r4.close(testing.allocator);
-    var r5 = try db.execSQL("INSERT INTO configs (id, data) VALUES (3, CAST('{\"key\": \"value\", \"extra\": 1}' AS JSONB))");
+    var r5 = try db.execSQL(
+        "INSERT INTO configs (id, data) VALUES (3, " ++
+            "CAST('{\"key\": \"value\", \"extra\": 1}' AS JSONB))",
+    );
     defer r5.close(testing.allocator);
 
     // Confirm this index is actually a native GIN index (opclass wired), so this
@@ -45288,7 +48356,11 @@ test "GIN cutover — jsonb_ops @> with no matches returns empty result" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_gin_cutover_jsonb_empty.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_gin_cutover_jsonb_empty.db",
+        .{dir_path},
+    );
     var db = try createTestDb(testing.allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -45296,7 +48368,9 @@ test "GIN cutover — jsonb_ops @> with no matches returns empty result" {
     defer r1.close(testing.allocator);
     var r2 = try db.execSQL("CREATE INDEX idx_configs_data ON configs (data) USING GIN");
     defer r2.close(testing.allocator);
-    var r3 = try db.execSQL("INSERT INTO configs (id, data) VALUES (1, CAST('{\"a\": 1}' AS JSONB))");
+    var r3 = try db.execSQL(
+        "INSERT INTO configs (id, data) VALUES (1, CAST('{\"a\": 1}' AS JSONB))",
+    );
     defer r3.close(testing.allocator);
 
     var result = try db.execSQL("SELECT id FROM configs WHERE data @> '{\"nonexistent\": true}'");
@@ -45403,7 +48477,9 @@ test "GIN cutover — array_ops @> uses native GIN scan and excludes non-matchin
 test "extractGinPredicate: recognizes json_contains on unqualified column" {
     var col_ref = ast_mod.Expr{ .column_ref = .{ .name = "data", .prefix = null } };
     var lit = ast_mod.Expr{ .string_literal = "{}" };
-    const expr = ast_mod.Expr{ .binary_op = .{ .op = .json_contains, .left = &col_ref, .right = &lit } };
+    const expr = ast_mod.Expr{
+        .binary_op = .{ .op = .json_contains, .left = &col_ref, .right = &lit },
+    };
     const result = extractGinPredicate(&expr);
     try testing.expect(result != null);
     try testing.expectEqualStrings("data", result.?.column_name);
@@ -45431,7 +48507,9 @@ test "extractGinPredicate: returns null for unsupported operator" {
 test "extractGinPredicate: returns null for qualified column" {
     var col_ref = ast_mod.Expr{ .column_ref = .{ .name = "data", .prefix = "t" } };
     var lit = ast_mod.Expr{ .string_literal = "{}" };
-    const expr = ast_mod.Expr{ .binary_op = .{ .op = .json_contains, .left = &col_ref, .right = &lit } };
+    const expr = ast_mod.Expr{
+        .binary_op = .{ .op = .json_contains, .left = &col_ref, .right = &lit },
+    };
     const result = extractGinPredicate(&expr);
     try testing.expect(result == null);
 }
@@ -45439,7 +48517,9 @@ test "extractGinPredicate: returns null for qualified column" {
 test "extractGinPredicate: returns null when column is on the right" {
     var col_ref = ast_mod.Expr{ .column_ref = .{ .name = "data", .prefix = null } };
     var lit = ast_mod.Expr{ .string_literal = "{}" };
-    const expr = ast_mod.Expr{ .binary_op = .{ .op = .json_contains, .left = &lit, .right = &col_ref } };
+    const expr = ast_mod.Expr{
+        .binary_op = .{ .op = .json_contains, .left = &lit, .right = &col_ref },
+    };
     const result = extractGinPredicate(&expr);
     try testing.expect(result == null);
 }
@@ -45449,7 +48529,12 @@ test "extractGinPredicate: returns null when column is on the right" {
 // to true for every non-unique .btree index (see phase 0d of #128), so a direct
 // `idx_tree.get(idx_key)` no longer finds the entry once an index is non-unique.
 // Caller owns the returned slice.
-fn fetchIndexRawValueForTest(allocator: Allocator, idx_tree: *BTree, idx_key: []const u8, composite_key: bool) !?[]u8 {
+fn fetchIndexRawValueForTest(
+    allocator: Allocator,
+    idx_tree: *BTree,
+    idx_key: []const u8,
+    composite_key: bool,
+) !?[]u8 {
     if (!composite_key) {
         return idx_tree.get(allocator, idx_key);
     }
@@ -45504,7 +48589,8 @@ test "step 3: btree index with covering_storage=true writes covering entry, not 
     var table_info = try db.catalog.getTable("t1");
     defer table_info.deinit(allocator);
     const orig_idx = table_info.findIndex("id") orelse return error.MissingIndex;
-    try testing.expect(orig_idx.covering_storage); // step 4 now implemented — automatically set for INCLUDE indexes
+    // step 4 now implemented — automatically set for INCLUDE indexes
+    try testing.expect(orig_idx.covering_storage);
 
     // Build a local index list with covering_storage forced true for "id", leaving
     // everything else (including the real, already-initialized root_page_id) intact.
@@ -45533,7 +48619,12 @@ test "step 3: btree index with covering_storage=true writes covering entry, not 
     defer allocator.free(idx_key);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
-    const raw_value = try fetchIndexRawValueForTest(allocator, &idx_tree, idx_key, idx_info.composite_key);
+    const raw_value = try fetchIndexRawValueForTest(
+        allocator,
+        &idx_tree,
+        idx_key,
+        idx_info.composite_key,
+    );
     defer if (raw_value) |v| allocator.free(v);
 
     try testing.expect(raw_value != null);
@@ -45596,7 +48687,12 @@ test "step 3: btree index with covering_storage=false writes plain row_key (back
     defer allocator.free(idx_key);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
-    const raw_value = try fetchIndexRawValueForTest(allocator, &idx_tree, idx_key, idx_info.composite_key);
+    const raw_value = try fetchIndexRawValueForTest(
+        allocator,
+        &idx_tree,
+        idx_key,
+        idx_info.composite_key,
+    );
     defer if (raw_value) |v| allocator.free(v);
 
     try testing.expect(raw_value != null);
@@ -45661,13 +48757,14 @@ test "step 3: hash index ignores covering_storage flag (no-op for non-btree)" {
     try testing.expectError(error.InvalidIndexEntry, decode_result);
 }
 
-// Step 4/7: CREATE INDEX Handler Tests — setting covering_storage via INCLUDE clause (TDD Red phase)
+// Step 4/7: CREATE INDEX Handler Tests — setting covering_storage via INCLUDE clause (TDD Red
+// phase)
 // These tests verify that when CREATE INDEX ... INCLUDE is used, the catalog stores
 // covering_storage=true for B+Tree indexes, and subsequent DML operations write real
 // covering entries (not just plain row_keys). This integrates step 4 (catalog) with
 // the step 3 (DML wiring) already tested above.
 
-test "step 4: CREATE INDEX ... INCLUDE sets covering_storage=true and writes real covering entries" {
+test "step 4: CREATE INDEX INCLUDE sets covering_storage and writes covering entries" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
@@ -45683,7 +48780,9 @@ test "step 4: CREATE INDEX ... INCLUDE sets covering_storage=true and writes rea
     defer cleanupTestDb(&db, path);
 
     // Create table with multiple columns
-    var r1 = try db.execSQL("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, salary INTEGER);");
+    var r1 = try db.execSQL(
+        "CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, salary INTEGER);",
+    );
     defer r1.close(allocator);
 
     // Create a B+Tree index with INCLUDE clause
@@ -45708,7 +48807,12 @@ test "step 4: CREATE INDEX ... INCLUDE sets covering_storage=true and writes rea
     defer allocator.free(idx_key);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
-    const raw_value = try fetchIndexRawValueForTest(allocator, &idx_tree, idx_key, idx_info.composite_key);
+    const raw_value = try fetchIndexRawValueForTest(
+        allocator,
+        &idx_tree,
+        idx_key,
+        idx_info.composite_key,
+    );
     defer if (raw_value) |v| allocator.free(v);
 
     try testing.expect(raw_value != null);
@@ -45743,12 +48847,18 @@ test "step 4: CREATE INDEX without INCLUDE keeps covering_storage=false (backwar
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step4_noncovering_create.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step4_noncovering_create.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table
-    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);");
+    var r1 = try db.execSQL(
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);",
+    );
     defer r1.close(allocator);
 
     // Create a B+Tree index WITHOUT INCLUDE clause
@@ -45773,7 +48883,12 @@ test "step 4: CREATE INDEX without INCLUDE keeps covering_storage=false (backwar
     defer allocator.free(idx_key);
 
     var idx_tree = BTree.init(db.pool, idx_info.root_page_id);
-    const raw_value = try fetchIndexRawValueForTest(allocator, &idx_tree, idx_key, idx_info.composite_key);
+    const raw_value = try fetchIndexRawValueForTest(
+        allocator,
+        &idx_tree,
+        idx_key,
+        idx_info.composite_key,
+    );
     defer if (raw_value) |v| allocator.free(v);
 
     try testing.expect(raw_value != null);
@@ -45785,7 +48900,8 @@ test "step 4: CREATE INDEX without INCLUDE keeps covering_storage=false (backwar
     try testing.expectError(error.InvalidIndexEntry, decode_result);
 }
 
-// Step 6/7: Index-Only Scan Cutover Tests — optimizer selects index-only scan when possible (TDD Red phase)
+// Step 6/7: Index-Only Scan Cutover Tests — optimizer selects index-only scan when possible (TDD
+// Red phase)
 // These tests verify that when a covering index exists and all required columns are covered,
 // the query optimizer selects "Index Only Scan" instead of a regular table scan.
 // This is end-to-end: verifying both the plan EXPLAIN output AND the SELECT result correctness.
@@ -45805,7 +48921,11 @@ test "step 6: Full scan with covering index uses Index Only Scan path" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_fullscan.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_indexonly_fullscan.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -45818,17 +48938,23 @@ test "step 6: Full scan with covering index uses Index Only Scan path" {
     defer r2.close(allocator);
 
     // Insert test data
-    var r3 = try db.execSQL("INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com');");
+    var r3 = try db.execSQL(
+        "INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com');",
+    );
     defer r3.close(allocator);
-    var r4 = try db.execSQL("INSERT INTO users (id, name, email) VALUES (2, 'Bob', 'bob@example.com');");
+    var r4 = try db.execSQL(
+        "INSERT INTO users (id, name, email) VALUES (2, 'Bob', 'bob@example.com');",
+    );
     defer r4.close(allocator);
 
     // Verify plan uses Index Only Scan for SELECT of covered columns
-    // STEP 6 MUST implement: optimizer.zig's optimizeScan should check covering_storage and set index_only=true
+    // STEP 6 MUST implement: optimizer.zig's optimizeScan should check covering_storage and set
+    // index_only=true
     var explain_result = try db.execSQL("EXPLAIN SELECT name, email FROM users ORDER BY name");
     defer explain_result.close(allocator);
 
-    // THIS ASSERTION WILL FAIL until step 6 is implemented (plan will say "Scan:" instead of "Index Only Scan:")
+    // THIS ASSERTION WILL FAIL until step 6 is implemented (plan will say "Scan:" instead of "Index
+    // Only Scan:")
     try testing.expect(std.mem.indexOf(u8, explain_result.message, "Index Only Scan") != null);
 
     // Verify SELECT results are correct (regression guard for incorrect implementations)
@@ -45877,34 +49003,53 @@ test "step 6: WHERE equality on indexed column uses Index Only Scan path" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_whereeq.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_indexonly_whereeq.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table
-    var r1 = try db.execSQL("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, user_id INTEGER, total INTEGER, status TEXT);");
+    var r1 = try db.execSQL(
+        "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, user_id INTEGER, total " ++
+            "INTEGER, status TEXT);",
+    );
     defer r1.close(allocator);
 
     // Create covering index on user_id with status and total as included columns
-    var r2 = try db.execSQL("CREATE INDEX idx_orders_user ON orders (user_id) INCLUDE (total, status);");
+    var r2 = try db.execSQL(
+        "CREATE INDEX idx_orders_user ON orders (user_id) INCLUDE (total, status);",
+    );
     defer r2.close(allocator);
 
     // Insert test data (use different user_ids to avoid index duplication)
-    var r3 = try db.execSQL("INSERT INTO orders (order_id, user_id, total, status) VALUES (1, 100, 500, 'pending');");
+    var r3 = try db.execSQL(
+        "INSERT INTO orders (order_id, user_id, total, status) VALUES (1, 100, 500, 'pending');",
+    );
     defer r3.close(allocator);
-    var r4 = try db.execSQL("INSERT INTO orders (order_id, user_id, total, status) VALUES (2, 101, 750, 'completed');");
+    var r4 = try db.execSQL(
+        "INSERT INTO orders (order_id, user_id, total, status) VALUES (2, 101, 750, 'completed');",
+    );
     defer r4.close(allocator);
 
     // Verify plan uses Index Only Scan for SELECT of covered columns with WHERE equality
-    // STEP 6 MUST implement: engine.zig's tryBuildIndexScan should check covering_storage and build IndexScanOp.covering
-    var explain_result = try db.execSQL("EXPLAIN SELECT user_id, total, status FROM orders WHERE user_id = 101");
+    // STEP 6 MUST implement: engine.zig's tryBuildIndexScan should check covering_storage and build
+    // IndexScanOp.covering
+    var explain_result = try db.execSQL(
+        "EXPLAIN SELECT user_id, total, status FROM orders WHERE user_id = 101",
+    );
     defer explain_result.close(allocator);
 
-    // THIS ASSERTION WILL FAIL until step 6 is implemented (plan will say "Scan:" instead of "Index Only Scan:")
+    // THIS ASSERTION WILL FAIL until step 6 is implemented (plan will say "Scan:" instead of "Index
+    // Only Scan:")
     try testing.expect(std.mem.indexOf(u8, explain_result.message, "Index Only Scan") != null);
 
     // Verify SELECT results are correct
-    var select_result = try db.execSQL("SELECT user_id, total, status FROM orders WHERE user_id = 101");
+    var select_result = try db.execSQL(
+        "SELECT user_id, total, status FROM orders WHERE user_id = 101",
+    );
     defer select_result.close(allocator);
 
     var row_count: usize = 0;
@@ -45940,12 +49085,18 @@ test "step 6: SELECT * must fallback to heap scan (not in covering index)" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_fallback_selectstar.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_indexonly_fallback_selectstar.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table with extra column
-    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER, category TEXT);");
+    var r1 = try db.execSQL(
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER, category TEXT);",
+    );
     defer r1.close(allocator);
 
     // Create covering index that only includes price (not category)
@@ -45953,12 +49104,17 @@ test "step 6: SELECT * must fallback to heap scan (not in covering index)" {
     defer r2.close(allocator);
 
     // Insert test data
-    var r3 = try db.execSQL("INSERT INTO products (id, name, price, category) VALUES (1, 'Widget', 9, 'tools');");
+    var r3 = try db.execSQL(
+        "INSERT INTO products (id, name, price, category) VALUES (1, 'Widget', 9, 'tools');",
+    );
     defer r3.close(allocator);
-    var r4 = try db.execSQL("INSERT INTO products (id, name, price, category) VALUES (2, 'Gadget', 15, 'electronics');");
+    var r4 = try db.execSQL(
+        "INSERT INTO products (id, name, price, category) VALUES (2, 'Gadget', 15, 'electronics');",
+    );
     defer r4.close(allocator);
 
-    // SELECT * includes column not in covering index (category), so should use heap scan (regular "Scan")
+    // SELECT * includes column not in covering index (category), so should use heap scan (regular
+    // "Scan")
     var explain_result = try db.execSQL("EXPLAIN SELECT * FROM products");
     defer explain_result.close(allocator);
 
@@ -45996,12 +49152,19 @@ test "step 6: Partial coverage fallback to heap scan" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_fallback_partial.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_indexonly_fallback_partial.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table
-    var r1 = try db.execSQL("CREATE TABLE sales (id INTEGER PRIMARY KEY, product TEXT, amount INTEGER, discount INTEGER);");
+    var r1 = try db.execSQL(
+        "CREATE TABLE sales (id INTEGER PRIMARY KEY, product TEXT, amount INTEGER, " ++
+            "discount INTEGER);",
+    );
     defer r1.close(allocator);
 
     // Create covering index that only includes amount (not discount)
@@ -46009,9 +49172,13 @@ test "step 6: Partial coverage fallback to heap scan" {
     defer r2.close(allocator);
 
     // Insert test data
-    var r3 = try db.execSQL("INSERT INTO sales (id, product, amount, discount) VALUES (1, 'Apple', 100, 10);");
+    var r3 = try db.execSQL(
+        "INSERT INTO sales (id, product, amount, discount) VALUES (1, 'Apple', 100, 10);",
+    );
     defer r3.close(allocator);
-    var r4 = try db.execSQL("INSERT INTO sales (id, product, amount, discount) VALUES (2, 'Banana', 50, 5);");
+    var r4 = try db.execSQL(
+        "INSERT INTO sales (id, product, amount, discount) VALUES (2, 'Banana', 50, 5);",
+    );
     defer r4.close(allocator);
 
     // SELECT includes both covered (amount) and uncovered (discount) columns, must use heap scan
@@ -46051,12 +49218,18 @@ test "step 6: Non-covering index regression test (must not use Index Only Scan)"
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_step6_indexonly_noncovering.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_step6_indexonly_noncovering.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table
-    var r1 = try db.execSQL("CREATE TABLE customers (id INTEGER PRIMARY KEY, email TEXT, phone TEXT, address TEXT);");
+    var r1 = try db.execSQL(
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, email TEXT, phone TEXT, address TEXT);",
+    );
     defer r1.close(allocator);
 
     // Create index WITHOUT INCLUDE clause (non-covering, covering_storage=false)
@@ -46064,19 +49237,26 @@ test "step 6: Non-covering index regression test (must not use Index Only Scan)"
     defer r2.close(allocator);
 
     // Insert test data
-    var r3 = try db.execSQL("INSERT INTO customers (id, email, phone, address) VALUES (1, 'user1@example.com', '555-1234', '123 Main St');");
+    var r3 = try db.execSQL(
+        "INSERT INTO customers (id, email, phone, address) VALUES (1, " ++
+            "'user1@example.com', '555-1234', '123 Main St');",
+    );
     defer r3.close(allocator);
 
     // Even though we SELECT email only, since the index is non-covering (no INCLUDE clause),
     // it should NOT be marked as Index Only Scan (covering_storage=false)
-    var explain_result = try db.execSQL("EXPLAIN SELECT email FROM customers WHERE email = 'user1@example.com'");
+    var explain_result = try db.execSQL(
+        "EXPLAIN SELECT email FROM customers WHERE email = 'user1@example.com'",
+    );
     defer explain_result.close(allocator);
 
     // Should NOT use Index Only Scan (non-covering index)
     try testing.expect(std.mem.indexOf(u8, explain_result.message, "Index Only Scan") == null);
 
     // Verify SELECT results are correct (regression guard)
-    var select_result = try db.execSQL("SELECT email FROM customers WHERE email = 'user1@example.com'");
+    var select_result = try db.execSQL(
+        "SELECT email FROM customers WHERE email = 'user1@example.com'",
+    );
     defer select_result.close(allocator);
 
     var row_count: usize = 0;
@@ -46090,7 +49270,7 @@ test "step 6: Non-covering index regression test (must not use Index Only Scan)"
     try testing.expectEqual(@as(usize, 1), row_count);
 }
 
-// ── Phase 0b: Composite-Key Non-Unique Index Tests ──────────────────────────
+// ── Phase 0b: Composite-Key Non-Unique Index Tests ──────────────
 // Tests for buildCompositeIndexKey, compositeIndexKeyPrefix, and
 // collectRowKeysForEquality helpers plus integration into insertIndexEntries/deleteIndexEntries.
 // These tests verify that non-unique secondary indexes with composite_key=true can store
@@ -46202,7 +49382,11 @@ test "phase 0b: insertIndexEntries with composite_key=true allows duplicate inde
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_composite_insert_dup.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase0b_composite_insert_dup.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -46286,7 +49470,11 @@ test "phase 0b: deleteIndexEntries with composite_key=true removes only the spec
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_composite_delete_one.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase0b_composite_delete_one.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -46363,7 +49551,11 @@ test "phase 0b: collectRowKeysForEquality returns all row_keys for a given idx_k
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_collect_rowkeys.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase0b_collect_rowkeys.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -46419,7 +49611,12 @@ test "phase 0b: collectRowKeysForEquality returns all row_keys for a given idx_k
     const idx_key = try valueToIndexKey(allocator, Value{ .text = "fruit" });
     defer allocator.free(idx_key);
 
-    const row_keys = try executor_mod.collectRowKeysForEquality(allocator, db.pool, idx_info.root_page_id, idx_key);
+    const row_keys = try executor_mod.collectRowKeysForEquality(
+        allocator,
+        db.pool,
+        idx_info.root_page_id,
+        idx_key,
+    );
     defer {
         for (row_keys) |rk| allocator.free(rk);
         allocator.free(row_keys);
@@ -46492,14 +49689,19 @@ test "phase 0b: collectRowKeysForEquality returns empty slice when no matches" {
     const idx_key = try valueToIndexKey(allocator, Value{ .text = "vegetable" });
     defer allocator.free(idx_key);
 
-    const row_keys = try executor_mod.collectRowKeysForEquality(allocator, db.pool, idx_info.root_page_id, idx_key);
+    const row_keys = try executor_mod.collectRowKeysForEquality(
+        allocator,
+        db.pool,
+        idx_info.root_page_id,
+        idx_key,
+    );
     defer allocator.free(row_keys);
 
     // Should return empty slice (not an error)
     try testing.expectEqual(@as(usize, 0), row_keys.len);
 }
 
-test "phase 0b: composite_key=false (legacy) still rejects duplicate indexed values for unique indexes" {
+test "phase 0b: composite_key=false (legacy) rejects duplicate values for unique indexes" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
     const allocator = testing.allocator;
 
@@ -46510,7 +49712,11 @@ test "phase 0b: composite_key=false (legacy) still rejects duplicate indexed val
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0b_composite_legacy_unique.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase0b_composite_legacy_unique.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -46561,7 +49767,11 @@ test "phase 0d: CREATE INDEX on non-unique column sets composite_key=true" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0d_create_idx_composite_flag.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase0d_create_idx_composite_flag.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -46579,7 +49789,8 @@ test "phase 0d: CREATE INDEX on non-unique column sets composite_key=true" {
 
     const idx = table_info.findIndex("tag") orelse return error.MissingIndex;
 
-    // EXPECTED FAILURE: composite_key should be true but is false (not yet implemented in CREATE INDEX handler)
+    // EXPECTED FAILURE: composite_key should be true but is false (not yet implemented in CREATE
+    // INDEX handler)
     try testing.expect(idx.composite_key == true);
 }
 
@@ -46594,7 +49805,11 @@ test "phase 0d: CREATE UNIQUE INDEX keeps composite_key=false" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0d_create_unique_idx_no_composite.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase0d_create_unique_idx_no_composite.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -46627,7 +49842,11 @@ test "phase 0d: end-to-end INSERT with duplicate indexed value on non-unique ind
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase0d_insert_dup_indexed_value.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase0d_insert_dup_indexed_value.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -46698,7 +49917,9 @@ test "phase 5: Bitmap-OR basic correctness — two indexed columns with OR predi
     defer cleanupTestDb(&db, path);
 
     // Create table with two indexed columns
-    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, color TEXT)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, color TEXT)",
+    );
     defer r1.close(allocator);
 
     // Create separate indexes on both columns
@@ -46708,18 +49929,28 @@ test "phase 5: Bitmap-OR basic correctness — two indexed columns with OR predi
     defer r3.close(allocator);
 
     // Insert test data: rows matching category, rows matching color, rows matching neither
-    var r4 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (1, 'electronics', 'red')");
+    var r4 = try db.execSQL(
+        "INSERT INTO products (id, category, color) VALUES (1, 'electronics', 'red')",
+    );
     defer r4.close(allocator);
-    var r5 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (2, 'clothing', 'red')");
+    var r5 = try db.execSQL(
+        "INSERT INTO products (id, category, color) VALUES (2, 'clothing', 'red')",
+    );
     defer r5.close(allocator);
-    var r6 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (3, 'electronics', 'blue')");
+    var r6 = try db.execSQL(
+        "INSERT INTO products (id, category, color) VALUES (3, 'electronics', 'blue')",
+    );
     defer r6.close(allocator);
-    var r7 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (4, 'furniture', 'green')");
+    var r7 = try db.execSQL(
+        "INSERT INTO products (id, category, color) VALUES (4, 'furniture', 'green')",
+    );
     defer r7.close(allocator);
 
     // Query using OR: should match rows where category='electronics' (1,3) OR color='red' (1,2)
     // Expected result: rows 1, 2, 3 (union of both sides, no row 4)
-    var result = try db.execSQL("SELECT id FROM products WHERE category = 'electronics' OR color = 'red' ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM products WHERE category = 'electronics' OR color = 'red' ORDER BY id",
+    );
     defer result.close(allocator);
 
     try testing.expect(result.rows != null);
@@ -46749,12 +49980,18 @@ test "phase 5: Bitmap-AND basic correctness — two indexed columns with AND pre
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_bitmap_and_basic.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase5_bitmap_and_basic.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table with two indexed columns
-    var r1 = try db.execSQL("CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, color TEXT)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE products (id INTEGER PRIMARY KEY, category TEXT, color TEXT)",
+    );
     defer r1.close(allocator);
 
     // Create separate indexes on both columns
@@ -46764,18 +50001,28 @@ test "phase 5: Bitmap-AND basic correctness — two indexed columns with AND pre
     defer r3.close(allocator);
 
     // Insert test data
-    var r4 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (1, 'electronics', 'red')");
+    var r4 = try db.execSQL(
+        "INSERT INTO products (id, category, color) VALUES (1, 'electronics', 'red')",
+    );
     defer r4.close(allocator);
-    var r5 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (2, 'clothing', 'red')");
+    var r5 = try db.execSQL(
+        "INSERT INTO products (id, category, color) VALUES (2, 'clothing', 'red')",
+    );
     defer r5.close(allocator);
-    var r6 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (3, 'electronics', 'blue')");
+    var r6 = try db.execSQL(
+        "INSERT INTO products (id, category, color) VALUES (3, 'electronics', 'blue')",
+    );
     defer r6.close(allocator);
-    var r7 = try db.execSQL("INSERT INTO products (id, category, color) VALUES (4, 'furniture', 'green')");
+    var r7 = try db.execSQL(
+        "INSERT INTO products (id, category, color) VALUES (4, 'furniture', 'green')",
+    );
     defer r7.close(allocator);
 
     // Query using AND: should match rows where category='electronics' AND color='red'
     // Expected result: only row 1 (intersection of both sides)
-    var result = try db.execSQL("SELECT id FROM products WHERE category = 'electronics' AND color = 'red' ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM products WHERE category = 'electronics' AND color = 'red' ORDER BY id",
+    );
     defer result.close(allocator);
 
     try testing.expect(result.rows != null);
@@ -46808,7 +50055,9 @@ test "phase 5: Mixed AND-of-OR predicate falls back correctly (no regression)" {
     defer cleanupTestDb(&db, path);
 
     // Create table with three indexed columns
-    var r1 = try db.execSQL("CREATE TABLE items (id INTEGER PRIMARY KEY, tag1 TEXT, tag2 TEXT, tag3 TEXT)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, tag1 TEXT, tag2 TEXT, tag3 TEXT)",
+    );
     defer r1.close(allocator);
 
     var r2 = try db.execSQL("CREATE INDEX idx_tag1 ON items (tag1)");
@@ -46832,7 +50081,9 @@ test "phase 5: Mixed AND-of-OR predicate falls back correctly (no regression)" {
     // This mixed predicate tree is explicitly OUT OF SCOPE for phase 5 bitmap planning,
     // so it must fall back to full-scan+filter and still return correct results.
     // Expected: rows where (tag1='a' OR tag2='x') AND tag3='p' → rows 1 (a,x,p) and 3 (a,y,p)
-    var result = try db.execSQL("SELECT id FROM items WHERE (tag1 = 'a' OR tag2 = 'x') AND tag3 = 'p' ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM items WHERE (tag1 = 'a' OR tag2 = 'x') AND tag3 = 'p' ORDER BY id",
+    );
     defer result.close(allocator);
 
     try testing.expect(result.rows != null);
@@ -46861,30 +50112,44 @@ test "phase 5: OR with one non-indexed column falls back correctly" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_or_one_nonindexed.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase5_or_one_nonindexed.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table with one indexed and one non-indexed column
-    var r1 = try db.execSQL("CREATE TABLE records (id INTEGER PRIMARY KEY, indexed_col TEXT, unindexed_col TEXT)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE records (id INTEGER PRIMARY KEY, indexed_col TEXT, unindexed_col TEXT)",
+    );
     defer r1.close(allocator);
 
     var r2 = try db.execSQL("CREATE INDEX idx_indexed ON records (indexed_col)");
     defer r2.close(allocator);
 
     // Insert test data
-    var r3 = try db.execSQL("INSERT INTO records (id, indexed_col, unindexed_col) VALUES (1, 'a', 'x')");
+    var r3 = try db.execSQL(
+        "INSERT INTO records (id, indexed_col, unindexed_col) VALUES (1, 'a', 'x')",
+    );
     defer r3.close(allocator);
-    var r4 = try db.execSQL("INSERT INTO records (id, indexed_col, unindexed_col) VALUES (2, 'b', 'y')");
+    var r4 = try db.execSQL(
+        "INSERT INTO records (id, indexed_col, unindexed_col) VALUES (2, 'b', 'y')",
+    );
     defer r4.close(allocator);
-    var r5 = try db.execSQL("INSERT INTO records (id, indexed_col, unindexed_col) VALUES (3, 'c', 'z')");
+    var r5 = try db.execSQL(
+        "INSERT INTO records (id, indexed_col, unindexed_col) VALUES (3, 'c', 'z')",
+    );
     defer r5.close(allocator);
 
     // Query with OR where one side is indexed and one is not
     // This is out of scope for bitmap-OR (not ALL disjuncts are indexed),
     // so it must fall back to full-scan+filter but still be correct.
     // Expected: rows where indexed_col='a' (row 1) OR unindexed_col='y' (row 2) → rows 1, 2
-    var result = try db.execSQL("SELECT id FROM records WHERE indexed_col = 'a' OR unindexed_col = 'y' ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM records WHERE indexed_col = 'a' OR unindexed_col = 'y' ORDER BY id",
+    );
     defer result.close(allocator);
 
     try testing.expect(result.rows != null);
@@ -46948,7 +50213,9 @@ test "phase 5: MVCC visibility through bitmap-OR path — invisible rows do not 
 
     // Now query via bitmap-OR in a fresh transaction that should see all committed rows
     try db.beginTransaction(.read_committed);
-    var result = try db.execSQL("SELECT id FROM data WHERE status = 'active' OR type = 'typeB' ORDER BY id");
+    var result = try db.execSQL(
+        "SELECT id FROM data WHERE status = 'active' OR type = 'typeB' ORDER BY id",
+    );
     defer result.close(allocator);
 
     try testing.expect(result.rows != null);
@@ -46980,12 +50247,18 @@ test "phase 5: Empty result correctness — bitmap-OR/AND with zero matches" {
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_bitmap_empty_result.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase5_bitmap_empty_result.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
     // Create table with two indexed columns
-    var r1 = try db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY, event_type TEXT, severity TEXT)");
+    var r1 = try db.execSQL(
+        "CREATE TABLE events (id INTEGER PRIMARY KEY, event_type TEXT, severity TEXT)",
+    );
     defer r1.close(allocator);
 
     var r2 = try db.execSQL("CREATE INDEX idx_type ON events (event_type)");
@@ -46994,13 +50267,19 @@ test "phase 5: Empty result correctness — bitmap-OR/AND with zero matches" {
     defer r3.close(allocator);
 
     // Insert test data (no rows matching the OR predicate)
-    var r4 = try db.execSQL("INSERT INTO events (id, event_type, severity) VALUES (1, 'login', 'low')");
+    var r4 = try db.execSQL(
+        "INSERT INTO events (id, event_type, severity) VALUES (1, 'login', 'low')",
+    );
     defer r4.close(allocator);
-    var r5 = try db.execSQL("INSERT INTO events (id, event_type, severity) VALUES (2, 'logout', 'low')");
+    var r5 = try db.execSQL(
+        "INSERT INTO events (id, event_type, severity) VALUES (2, 'logout', 'low')",
+    );
     defer r5.close(allocator);
 
     // Query using bitmap-OR that matches nothing
-    var result1 = try db.execSQL("SELECT id FROM events WHERE event_type = 'error' OR severity = 'critical'");
+    var result1 = try db.execSQL(
+        "SELECT id FROM events WHERE event_type = 'error' OR severity = 'critical'",
+    );
     defer result1.close(allocator);
 
     try testing.expect(result1.rows != null);
@@ -47015,7 +50294,9 @@ test "phase 5: Empty result correctness — bitmap-OR/AND with zero matches" {
     try testing.expectEqual(@as(usize, 0), count1);
 
     // Query using bitmap-AND that matches nothing
-    var result2 = try db.execSQL("SELECT id FROM events WHERE event_type = 'login' AND severity = 'critical'");
+    var result2 = try db.execSQL(
+        "SELECT id FROM events WHERE event_type = 'login' AND severity = 'critical'",
+    );
     defer result2.close(allocator);
 
     try testing.expect(result2.rows != null);
@@ -47041,7 +50322,11 @@ test "phase 5: OperatorChain reuse with JOIN of filtered subqueries (memory leak
     defer testing.allocator.free(dir_path);
 
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/test_phase5_bitmap_operatorchain_reuse.db", .{dir_path});
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "{s}/test_phase5_bitmap_operatorchain_reuse.db",
+        .{dir_path},
+    );
     var db = try createTestDb(allocator, path);
     defer cleanupTestDb(&db, path);
 
@@ -47120,7 +50405,7 @@ test "phase 5: OperatorChain reuse with JOIN of filtered subqueries (memory leak
     try testing.expect(iter2 != null);
 }
 
-// ── MATCH_RECOGNIZE Phase 6 Tests (end-to-end SQL integration) ─────────────────────────
+// ── MATCH_RECOGNIZE Phase 6 Tests (end-to-end SQL integration) ──────────
 
 test "MATCH_RECOGNIZE: classic V-shape stock price pattern" {
     if (!ENABLE_TESTS) return error.SkipZigTest;
@@ -47139,7 +50424,10 @@ test "MATCH_RECOGNIZE: classic V-shape stock price pattern" {
     var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
     defer r1.close(testing.allocator);
 
-    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), " ++
+            "('AAPL', 4, 85), ('AAPL', 5, 95)",
+    );
     defer r2.close(testing.allocator);
 
     // Pattern: A B+ C+ where B is descending, C is ascending
@@ -47182,7 +50470,10 @@ test "MATCH_RECOGNIZE: ALL ROWS PER MATCH outputs all matched rows" {
     var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
     defer r1.close(testing.allocator);
 
-    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), " ++
+            "('AAPL', 4, 85), ('AAPL', 5, 95)",
+    );
     defer r2.close(testing.allocator);
 
     // Same V-shape pattern but with ALL ROWS PER MATCH — should output 5 rows
@@ -47255,7 +50546,8 @@ test "MATCH_RECOGNIZE: PARTITION BY with multiple partitions" {
             }
         }
     }
-    // AAPL partition should have 1 match, GOOG should have 0 (monotonic increasing, no B+ C+ pattern)
+    // AAPL partition should have 1 match, GOOG should have 0 (monotonic increasing, no B+ C+
+    // pattern)
     try testing.expectEqual(@as(usize, 1), aapl_matches);
     try testing.expectEqual(@as(usize, 0), goog_matches);
 }
@@ -47276,7 +50568,10 @@ test "MATCH_RECOGNIZE: MEASURES with FIRST/LAST/MATCH_NUMBER/CLASSIFIER" {
     var r1 = try db.execSQL("CREATE TABLE prices (stock TEXT, day INTEGER, price INTEGER)");
     defer r1.close(testing.allocator);
 
-    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), " ++
+            "('AAPL', 4, 85), ('AAPL', 5, 95)",
+    );
     defer r2.close(testing.allocator);
 
     // Query with MEASURES: first_price (FIRST), last_price (LAST), match_num (MATCH_NUMBER).
@@ -47336,7 +50631,8 @@ test "MATCH_RECOGNIZE: AFTER MATCH SKIP TO NEXT ROW allows overlapping matches" 
     var r1 = try db.execSQL("CREATE TABLE t (id INTEGER, val INTEGER)");
     defer r1.close(testing.allocator);
 
-    // Simple pattern: A B. Rows 1-2 match (A=1,B=2), then with SKIP TO NEXT ROW rows 2-3 also match (A=2,B=3)
+    // Simple pattern: A B. Rows 1-2 match (A=1,B=2), then with SKIP TO NEXT ROW rows 2-3 also match
+    // (A=2,B=3)
     var r2 = try db.execSQL("INSERT INTO t VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1)");
     defer r2.close(testing.allocator);
 
@@ -47473,7 +50769,10 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: RUNNING LAST() in ALL ROWS PER MATCH g
     defer r1.close(testing.allocator);
 
     // V-shape pattern: prices 100,90,80,85,95 over 5 days
-    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), " ++
+            "('AAPL', 4, 85), ('AAPL', 5, 95)",
+    );
     defer r2.close(testing.allocator);
 
     // ALL ROWS PER MATCH with RUNNING LAST(price) — should emit 5 rows where running_last value
@@ -47496,7 +50795,10 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: RUNNING LAST() in ALL ROWS PER MATCH g
         var row = row_ptr.*;
         defer row.deinit();
         if (row.values.len >= 2 and row.values[1] == .integer) {
-            running_last_values.append(testing.allocator, row.values[1].integer) catch return error.OutOfMemory;
+            running_last_values.append(
+                testing.allocator,
+                row.values[1].integer,
+            ) catch return error.OutOfMemory;
         }
     }
 
@@ -47529,7 +50831,10 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: FINAL LAST() in ALL ROWS PER MATCH is 
     defer r1.close(testing.allocator);
 
     // Same V-shape pattern: prices 100,90,80,85,95 over 5 days
-    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), " ++
+            "('AAPL', 4, 85), ('AAPL', 5, 95)",
+    );
     defer r2.close(testing.allocator);
 
     // ALL ROWS PER MATCH with FINAL LAST(price) — should emit 5 rows where final_last value
@@ -47552,7 +50857,10 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: FINAL LAST() in ALL ROWS PER MATCH is 
         var row = row_ptr.*;
         defer row.deinit();
         if (row.values.len >= 2 and row.values[1] == .integer) {
-            final_last_values.append(testing.allocator, row.values[1].integer) catch return error.OutOfMemory;
+            final_last_values.append(
+                testing.allocator,
+                row.values[1].integer,
+            ) catch return error.OutOfMemory;
         }
     }
 
@@ -47582,7 +50890,10 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: no keyword defaults to RUNNING (grows 
     defer r1.close(testing.allocator);
 
     // Same V-shape pattern: prices 100,90,80,85,95 over 5 days
-    var r2 = try db.execSQL("INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), ('AAPL', 4, 85), ('AAPL', 5, 95)");
+    var r2 = try db.execSQL(
+        "INSERT INTO prices VALUES ('AAPL', 1, 100), ('AAPL', 2, 90), ('AAPL', 3, 80), " ++
+            "('AAPL', 4, 85), ('AAPL', 5, 95)",
+    );
     defer r2.close(testing.allocator);
 
     // ALL ROWS PER MATCH without RUNNING/FINAL keyword — should default to RUNNING
@@ -47605,7 +50916,10 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: no keyword defaults to RUNNING (grows 
         var row = row_ptr.*;
         defer row.deinit();
         if (row.values.len >= 2 and row.values[1] == .integer) {
-            default_last_values.append(testing.allocator, row.values[1].integer) catch return error.OutOfMemory;
+            default_last_values.append(
+                testing.allocator,
+                row.values[1].integer,
+            ) catch return error.OutOfMemory;
         }
     }
 

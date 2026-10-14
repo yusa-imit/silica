@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Line length** (plan 001 tidy part 2, final batch): wrapped or shortened every line over 100
+  bytes in `sql/engine.zig` (1,184 lines) and removed the last `line_length:` entry from
+  `tidy_baseline.txt`; the line-length baseline is now empty. Behaviour is unchanged.
 - **Line length** (plan 001 tidy part 2, batch 4): wrapped or shortened every line over 100 bytes
   in 11 files (`server/connection`, `sql/conformance_test`, `sql/parser_fuzz`, `sql/pattern_match`,
   `sql/tokenizer_fuzz`, `storage/gist_index`, `storage/hash_index`, `tx/jepsen_test`, `tx/mvcc`,
