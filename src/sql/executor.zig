@@ -291,9 +291,7 @@ pub fn formatInterval(allocator: Allocator, iv: Value.Interval) ![]u8 {
 /// Parse PostgreSQL-style interval string: "1 year 2 months 3 days 04:05:06"
 /// Also supports short forms: "1 day", "2 hours", "30 minutes", "1 year 6 months"
 fn parseIntervalString(s: []const u8) ?Value.Interval {
-    var months: i32 = 0;
-    var days: i32 = 0;
-    var micros: i64 = 0;
+    var acc: Value.Interval = .{ .months = 0, .days = 0, .micros = 0 };
 
     var i: usize = 0;
     while (i < s.len) {
@@ -303,13 +301,13 @@ fn parseIntervalString(s: []const u8) ?Value.Interval {
 
         // Check for time component (HH:MM:SS)
         if (isTimeComponent(s[i..])) {
-            micros += parseTimeComponent(s[i..]) orelse return null;
+            acc.micros += parseTimeComponent(s[i..]) orelse return null;
             break;
         }
 
         // Check for negative time component (-HH:MM:SS)
         if (s[i] == '-' and i + 1 < s.len and isTimeComponent(s[i + 1 ..])) {
-            micros -= parseTimeComponent(s[i + 1 ..]) orelse return null;
+            acc.micros -= parseTimeComponent(s[i + 1 ..]) orelse return null;
             break;
         }
 
@@ -328,7 +326,7 @@ fn parseIntervalString(s: []const u8) ?Value.Interval {
         // Parse unit
         if (i >= s.len) {
             // Bare number — treat as seconds
-            micros += @as(i64, value) * MICROS_PER_SECOND;
+            acc.micros += @as(i64, value) * MICROS_PER_SECOND;
             break;
         }
 
@@ -340,26 +338,32 @@ fn parseIntervalString(s: []const u8) ?Value.Interval {
         }
         const unit = s[unit_start..i];
 
-        if (startsWithI(unit, "year")) {
-            months += value * 12;
-        } else if (startsWithI(unit, "mon")) {
-            months += value;
-        } else if (startsWithI(unit, "week")) {
-            days += value * 7;
-        } else if (startsWithI(unit, "day")) {
-            days += value;
-        } else if (startsWithI(unit, "hour")) {
-            micros += @as(i64, value) * MICROS_PER_HOUR;
-        } else if (startsWithI(unit, "min")) {
-            micros += @as(i64, value) * MICROS_PER_MINUTE;
-        } else if (startsWithI(unit, "sec")) {
-            micros += @as(i64, value) * MICROS_PER_SECOND;
-        } else {
-            return null;
-        }
+        applyIntervalUnit(&acc, unit, value) orelse return null;
     }
 
-    return .{ .months = months, .days = days, .micros = micros };
+    return acc;
+}
+
+/// Add `value` units of the named interval unit (prefix match) to `acc`.
+/// Returns null when the unit name is not recognised.
+fn applyIntervalUnit(acc: *Value.Interval, unit: []const u8, value: i32) ?void {
+    if (startsWithI(unit, "year")) {
+        acc.months += value * 12;
+    } else if (startsWithI(unit, "mon")) {
+        acc.months += value;
+    } else if (startsWithI(unit, "week")) {
+        acc.days += value * 7;
+    } else if (startsWithI(unit, "day")) {
+        acc.days += value;
+    } else if (startsWithI(unit, "hour")) {
+        acc.micros += @as(i64, value) * MICROS_PER_HOUR;
+    } else if (startsWithI(unit, "min")) {
+        acc.micros += @as(i64, value) * MICROS_PER_MINUTE;
+    } else if (startsWithI(unit, "sec")) {
+        acc.micros += @as(i64, value) * MICROS_PER_SECOND;
+    } else {
+        return null;
+    }
 }
 
 fn isTimeComponent(s: []const u8) bool {
@@ -4398,40 +4402,27 @@ fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
     };
 }
 
+/// True when the format template contains the token in upper or lower case.
+fn hasFormatToken(fmt: []const u8, upper: []const u8, lower: []const u8) bool {
+    return std.mem.containsAtLeast(u8, fmt, 1, upper) or
+        std.mem.containsAtLeast(u8, fmt, 1, lower);
+}
+
 /// Parse a text string to a numeric value using a PostgreSQL-style format template.
 /// Format tokens supported: 9, 0, ., D, ,, G, MI, S, PR, L, FM
 /// Returns f64 result, or null on parse error.
 fn toNumber(text: []const u8, fmt: []const u8) ?f64 {
-    // Check for PR (angle bracket negative): <number> means negative
-    var pr_negative = false;
-    if (std.mem.containsAtLeast(u8, fmt, 1, "PR") or std.mem.containsAtLeast(u8, fmt, 1, "pr")) {
-        // Check if text has angle brackets
-        if (text.len >= 2 and text[0] == '<' and text[text.len - 1] == '>') {
-            pr_negative = true;
-        }
-    }
+    const pr_negative = hasFormatToken(fmt, "PR", "pr") and
+        text.len >= 2 and text[0] == '<' and text[text.len - 1] == '>';
 
     // Check for MI (trailing minus): last non-space char is '-'
-    var mi_negative = false;
-    if (std.mem.containsAtLeast(u8, fmt, 1, "MI") or std.mem.containsAtLeast(u8, fmt, 1, "mi")) {
-        var trimmed = text;
-        while (trimmed.len > 0 and trimmed[trimmed.len - 1] == ' ') {
-            trimmed = trimmed[0 .. trimmed.len - 1];
-        }
-        if (trimmed.len > 0 and trimmed[trimmed.len - 1] == '-') {
-            mi_negative = true;
-        }
-    }
+    const trimmed = std.mem.trimRight(u8, text, " ");
+    const mi_negative = hasFormatToken(fmt, "MI", "mi") and
+        trimmed.len > 0 and trimmed[trimmed.len - 1] == '-';
 
     // Check for S (leading sign): starts with + or -
-    var has_s = false;
-    var s_negative = false;
-    if (std.mem.containsAtLeast(u8, fmt, 1, "S") or std.mem.containsAtLeast(u8, fmt, 1, "s")) {
-        has_s = true;
-        if (text.len > 0 and text[0] == '-') {
-            s_negative = true;
-        }
-    }
+    const has_s = hasFormatToken(fmt, "S", "s");
+    const s_negative = has_s and text.len > 0 and text[0] == '-';
 
     // Strip special format characters and build numeric string using stack buffer
     // Keep only digits, decimal point
