@@ -29,7 +29,6 @@ function_length:src/tui.zig:run:73
 function_length:src/sql/catalog.zig:serializeTableFull:136
 function_length:src/sql/catalog.zig:deserializeTable:219
 function_length:src/sql/engine.zig:valueToIndexKey:102
-function_length:src/sql/executor.zig:parseIntervalString:71
 function_length:src/sql/executor.zig:porterStem:74
 function_length:src/sql/executor.zig:textToTsvector:79
 function_length:src/sql/executor.zig:serializeValue:111
@@ -45,7 +44,6 @@ function_length:src/sql/executor.zig:evalCast:123
 function_length:src/sql/executor.zig:toCharTimestamp:258
 function_length:src/sql/executor.zig:toCharNumber:110
 function_length:src/sql/executor.zig:parseFormattedDatetime:99
-function_length:src/sql/executor.zig:toNumber:72
 function_length:src/sql/executor.zig:evalFunctionCall:31568
 function_length:src/sql/tokenizer.zig:lookupKeyword:262
 function_length:src/sql/planner.zig:resolveExprType:74
