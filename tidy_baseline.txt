@@ -23,7 +23,6 @@ function_length:src/sql/executor.zig:textToTsvector:79
 function_length:src/sql/executor.zig:serializeValue:111
 function_length:src/sql/executor.zig:deserializeValue:106
 function_length:src/sql/executor.zig:evalExpr:296
-function_length:src/sql/executor.zig:evalJsonExtract:71
 function_length:src/sql/executor.zig:evalJsonPathExtract:79
 function_length:src/sql/executor.zig:evalBinaryOp:120
 function_length:src/sql/executor.zig:evalArithmetic:123
