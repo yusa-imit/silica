@@ -2431,23 +2431,25 @@ fn evalJsonExtract(
     };
 
     // Convert result to Value
-    if (as_text) {
-        // Return as text (for ->> operator)
-        const text_result = switch (result_json) {
-            .string => |s| try dupeOom(allocator, s),
-            .integer => |v| try printAlloc(allocator, "{d}", .{v}),
-            .float => |v| try printAlloc(allocator, "{d}", .{v}),
-            .bool => |b| try dupeOom(allocator, if (b) "true" else "false"),
-            .null => return Value.null_value,
-            .number_string => |s| try dupeOom(allocator, s),
-            // For objects/arrays, serialize back to JSON
-            .object, .array => try jsonToOwned(allocator, result_json),
-        };
-        return Value{ .text = text_result };
-    } else {
-        // Return as text (JSON stored as text)
-        return Value{ .text = try jsonToOwned(allocator, result_json) };
-    }
+    if (as_text) return jsonScalarToTextValue(allocator, result_json);
+    // Return as text (JSON stored as text)
+    return Value{ .text = try jsonToOwned(allocator, result_json) };
+}
+
+/// Render a JSON value for the ->> operator: scalars as bare text, null as SQL NULL,
+/// containers re-serialized as JSON.
+fn jsonScalarToTextValue(allocator: Allocator, json: std.json.Value) EvalError!Value {
+    const text_result = switch (json) {
+        .string => |s| try dupeOom(allocator, s),
+        .integer => |v| try printAlloc(allocator, "{d}", .{v}),
+        .float => |v| try printAlloc(allocator, "{d}", .{v}),
+        .bool => |b| try dupeOom(allocator, if (b) "true" else "false"),
+        .null => return Value.null_value,
+        .number_string => |s| try dupeOom(allocator, s),
+        // For objects/arrays, serialize back to JSON
+        .object, .array => try jsonToOwned(allocator, json),
+    };
+    return Value{ .text = text_result };
 }
 
 /// Check if left JSON contains right JSON: left @> right
