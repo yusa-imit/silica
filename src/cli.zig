@@ -1492,74 +1492,89 @@ fn showIndexes(
     stdout: anytype,
     stderr: anytype,
 ) void {
+    if (table_name) |name| {
+        showTableIndexes(db, name, stdout, stderr);
+    } else {
+        showAllIndexes(allocator, db, stdout, stderr);
+    }
+}
+
+/// Show indexes for one named table.
+fn showTableIndexes(db: *Database, table_name: []const u8, stdout: anytype, stderr: anytype) void {
     var catalog = &db.catalog;
 
-    if (table_name) |name| {
-        // Show indexes for specific table
-        const trimmed = std.mem.trim(u8, name, " \t");
-        if (trimmed.len == 0) {
-            printError(stderr, "Table name cannot be empty.");
-            return;
-        }
+    const trimmed = std.mem.trim(u8, table_name, " \t");
+    if (trimmed.len == 0) {
+        printError(stderr, "Table name cannot be empty.");
+        return;
+    }
 
-        const table_info = catalog.getTable(trimmed) catch |err| {
-            const msg = switch (err) {
-                error.TableNotFound => "Table not found.",
-                error.OutOfMemory => "Out of memory.",
-                else => "Failed to retrieve table info.",
-            };
-            printError(stderr, msg);
-            return;
+    const table_info = catalog.getTable(trimmed) catch |err| {
+        const msg = switch (err) {
+            error.TableNotFound => "Table not found.",
+            error.OutOfMemory => "Out of memory.",
+            else => "Failed to retrieve table info.",
         };
+        printError(stderr, msg);
+        return;
+    };
+    defer table_info.deinit(catalog.allocator);
+
+    if (table_info.indexes.len == 0) {
+        stdout.print("No indexes found for table '{s}'.\n", .{trimmed}) catch {};
+        return;
+    }
+
+    for (table_info.indexes) |idx| printIndexLine(stdout, trimmed, idx);
+}
+
+/// Show indexes for every table, sorted by table name.
+fn showAllIndexes(
+    allocator: std.mem.Allocator,
+    db: *Database,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    var catalog = &db.catalog;
+
+    const names = catalog.listTables(allocator) catch |err| {
+        const msg = switch (err) {
+            error.OutOfMemory => "Out of memory.",
+            else => "Failed to list tables.",
+        };
+        printError(stderr, msg);
+        return;
+    };
+    defer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
+
+    if (names.len == 0) {
+        stdout.writeAll("No tables found.\n") catch {};
+        return;
+    }
+
+    // Sort table names alphabetically
+    std.mem.sort([]const u8, names, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    var has_indexes = false;
+    for (names) |name| {
+        const table_info = catalog.getTable(name) catch continue;
         defer table_info.deinit(catalog.allocator);
 
-        if (table_info.indexes.len == 0) {
-            stdout.print("No indexes found for table '{s}'.\n", .{trimmed}) catch {};
-            return;
-        }
+        if (table_info.indexes.len == 0) continue;
 
-        for (table_info.indexes) |idx| printIndexLine(stdout, trimmed, idx);
-    } else {
-        // Show indexes for all tables
-        const names = catalog.listTables(allocator) catch |err| {
-            const msg = switch (err) {
-                error.OutOfMemory => "Out of memory.",
-                else => "Failed to list tables.",
-            };
-            printError(stderr, msg);
-            return;
-        };
-        defer {
-            for (names) |n| allocator.free(n);
-            allocator.free(names);
-        }
+        has_indexes = true;
+        for (table_info.indexes) |idx| printIndexLine(stdout, name, idx);
+    }
 
-        if (names.len == 0) {
-            stdout.writeAll("No tables found.\n") catch {};
-            return;
-        }
-
-        // Sort table names alphabetically
-        std.mem.sort([]const u8, names, {}, struct {
-            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
-            }
-        }.lessThan);
-
-        var has_indexes = false;
-        for (names) |name| {
-            const table_info = catalog.getTable(name) catch continue;
-            defer table_info.deinit(catalog.allocator);
-
-            if (table_info.indexes.len == 0) continue;
-
-            has_indexes = true;
-            for (table_info.indexes) |idx| printIndexLine(stdout, name, idx);
-        }
-
-        if (!has_indexes) {
-            stdout.writeAll("No indexes found.\n") catch {};
-        }
+    if (!has_indexes) {
+        stdout.writeAll("No indexes found.\n") catch {};
     }
 }
 
