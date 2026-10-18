@@ -4,7 +4,6 @@
 # limit, or a newly-offending function/file, fails the build.
 # `line_length` entries cap the number of lines over 100 columns per file.
 function_length:src/cli.zig:main:229
-function_length:src/cli.zig:showIndexes:77
 function_length:src/cli.zig:readAndExecuteFile:74
 function_length:src/cli.zig:saveDatabase:232
 function_length:src/cli.zig:importCsvFile:84
