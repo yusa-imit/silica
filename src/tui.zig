@@ -3145,6 +3145,18 @@ fn renderTreemap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     tm.render(buf, popup_area);
 }
 
+/// Maps a history entry to its query-metrics matrix row: 0 SELECT, 1 INSERT, 2 UPDATE,
+/// 3 DELETE, 4 DDL (anything else), 5 failed. `prefix` is the first (up to) 6 title bytes.
+fn matrixRowIndex(success: bool, prefix: []const u8) usize {
+    std.debug.assert(prefix.len <= 6);
+    if (!success) return 5;
+    const verbs = [_][]const u8{ "SELECT", "INSERT", "UPDATE", "DELETE" };
+    for (verbs, 0..) |verb, row_index| {
+        if (std.ascii.eqlIgnoreCase(prefix, verb)) return row_index;
+    }
+    return 4;
+}
+
 fn renderMatrixView(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.matrix_visible) return;
 
@@ -3159,18 +3171,7 @@ fn renderMatrixView(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     var max_ms: [MATRIX_ROWS]u64 = std.mem.zeroes([MATRIX_ROWS]u64);
 
     for (app.query_history[0..actual_count]) |entry| {
-        const row_idx: usize = if (!entry.success) 5 else blk: {
-            const upper = entry.title[0..@min(entry.title_len, 6)];
-            if (std.mem.startsWith(u8, upper, "SELECT") or
-                std.mem.startsWith(u8, upper, "select")) break :blk 0;
-            if (std.mem.startsWith(u8, upper, "INSERT") or
-                std.mem.startsWith(u8, upper, "insert")) break :blk 1;
-            if (std.mem.startsWith(u8, upper, "UPDATE") or
-                std.mem.startsWith(u8, upper, "update")) break :blk 2;
-            if (std.mem.startsWith(u8, upper, "DELETE") or
-                std.mem.startsWith(u8, upper, "delete")) break :blk 3;
-            break :blk 4; // DDL
-        };
+        const row_idx = matrixRowIndex(entry.success, entry.title[0..@min(entry.title_len, 6)]);
         counts[row_idx] += 1;
         total_ms[row_idx] += entry.duration_ms;
         if (entry.duration_ms > max_ms[row_idx]) max_ms[row_idx] = entry.duration_ms;
@@ -9620,4 +9621,15 @@ test "boxplot: other overlays are unaffected when boxplot is toggled" {
     try std.testing.expectEqual(@as(usize, 2), app.dotplot_focused);
     try std.testing.expect(app.sunburst_visible);
     try std.testing.expectEqual(@as(usize, 1), app.sunburst_focused);
+}
+
+test "matrixRowIndex: classifies verbs, DDL, and failures" {
+    try std.testing.expectEqual(@as(usize, 0), matrixRowIndex(true, "SELECT"));
+    try std.testing.expectEqual(@as(usize, 1), matrixRowIndex(true, "insert"));
+    try std.testing.expectEqual(@as(usize, 2), matrixRowIndex(true, "Update"));
+    try std.testing.expectEqual(@as(usize, 3), matrixRowIndex(true, "DELETE"));
+    try std.testing.expectEqual(@as(usize, 4), matrixRowIndex(true, "CREATE"));
+    try std.testing.expectEqual(@as(usize, 4), matrixRowIndex(true, ""));
+    try std.testing.expectEqual(@as(usize, 4), matrixRowIndex(true, "SEL"));
+    try std.testing.expectEqual(@as(usize, 5), matrixRowIndex(false, "SELECT"));
 }
