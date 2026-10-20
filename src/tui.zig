@@ -18,79 +18,88 @@ const CompletionItem = struct {
     description: ?[]const u8 = null,
 };
 
-// SQL keyword help text for tooltips
+// SQL keyword help text for tooltips.
+const sql_keyword_help = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "SELECT", "Retrieve rows from tables" },
+    .{ "INSERT", "Add new rows to a table" },
+    .{ "UPDATE", "Modify existing rows" },
+    .{ "DELETE", "Remove rows from a table" },
+    .{ "CREATE", "Create database objects (TABLE, INDEX, VIEW)" },
+    .{ "DROP", "Remove database objects" },
+    .{ "ALTER", "Modify table structure" },
+    .{ "FROM", "Specify source table(s)" },
+    .{ "WHERE", "Filter rows with conditions" },
+    .{ "JOIN", "Combine rows from multiple tables" },
+    .{ "INNER", "Return matching rows from both tables" },
+    .{ "LEFT", "Return all left table rows + matches" },
+    .{ "RIGHT", "Return all right table rows + matches" },
+    .{ "FULL", "Return all rows with matches where available" },
+    .{ "ON", "Specify join condition" },
+    .{ "GROUP", "Aggregate rows by column values" },
+    .{ "HAVING", "Filter grouped results" },
+    .{ "ORDER", "Sort result rows" },
+    .{ "BY", "Specify sort/group column(s)" },
+    .{ "LIMIT", "Restrict number of rows returned" },
+    .{ "OFFSET", "Skip N rows before returning results" },
+    .{ "DISTINCT", "Remove duplicate rows" },
+    .{ "AS", "Rename column or table (alias)" },
+    .{ "AND", "Combine conditions (both must be true)" },
+    .{ "OR", "Combine conditions (either can be true)" },
+    .{ "NOT", "Negate a condition" },
+    .{ "NULL", "Represents missing or unknown value" },
+    .{ "IS", "Test for NULL values" },
+    .{ "IN", "Match any value in a list" },
+    .{ "BETWEEN", "Match values in a range" },
+    .{ "LIKE", "Match text patterns (% and _ wildcards)" },
+    .{ "EXISTS", "Check if subquery returns rows" },
+    .{ "CASE", "Conditional expression (if-then-else)" },
+    .{ "WHEN", "Condition in CASE expression" },
+    .{ "THEN", "Result when WHEN condition is true" },
+    .{ "ELSE", "Default result in CASE expression" },
+    .{ "END", "Close CASE or compound statement" },
+    .{ "UNION", "Combine results from multiple queries" },
+    .{ "INTERSECT", "Return common rows from queries" },
+    .{ "EXCEPT", "Return rows from first query not in second" },
+    .{ "PRIMARY", "Uniquely identifies rows (PRIMARY KEY)" },
+    .{ "FOREIGN", "References another table (FOREIGN KEY)" },
+    .{ "KEY", "Constraint or index" },
+    .{ "UNIQUE", "Prevent duplicate values in column" },
+    .{ "CHECK", "Validate column values with condition" },
+    .{ "DEFAULT", "Specify default column value" },
+    .{ "INDEX", "Speed up queries on column(s)" },
+    .{ "VIEW", "Virtual table from a query" },
+    .{ "TRANSACTION", "Atomic unit of work (BEGIN...COMMIT)" },
+    .{ "BEGIN", "Start transaction" },
+    .{ "COMMIT", "Save transaction changes" },
+    .{ "ROLLBACK", "Discard transaction changes" },
+    .{ "SAVEPOINT", "Create rollback point within transaction" },
+    .{ "RELEASE", "Remove savepoint" },
+    .{ "WITH", "Define CTE (Common Table Expression)" },
+    .{ "RECURSIVE", "Enable recursive CTE" },
+    .{ "OVER", "Define window for window function" },
+    .{ "PARTITION", "Divide rows into groups for window" },
+    .{ "ROWS", "Define window frame by row count" },
+    .{ "RANGE", "Define window frame by value range" },
+    .{ "ANALYZE", "Collect table statistics for optimizer" },
+    .{ "EXPLAIN", "Show query execution plan" },
+    .{ "VACUUM", "Reclaim storage and optimize database" },
+    .{ "REINDEX", "Rebuild index from scratch" },
+});
+
+// Upper bound on a key in `sql_keyword_help`; a longer input cannot match.
+const sql_keyword_length_max = 16;
+
+comptime {
+    for (sql_keyword_help.keys()) |key| {
+        std.debug.assert(key.len <= sql_keyword_length_max);
+    }
+}
+
 fn getSqlKeywordHelp(keyword: []const u8) ?[]const u8 {
-    const upper = std.ascii.allocUpperString(std.heap.page_allocator, keyword) catch return null;
-    defer std.heap.page_allocator.free(upper);
-
-    const help_map = std.StaticStringMap([]const u8).initComptime(.{
-        .{ "SELECT", "Retrieve rows from tables" },
-        .{ "INSERT", "Add new rows to a table" },
-        .{ "UPDATE", "Modify existing rows" },
-        .{ "DELETE", "Remove rows from a table" },
-        .{ "CREATE", "Create database objects (TABLE, INDEX, VIEW)" },
-        .{ "DROP", "Remove database objects" },
-        .{ "ALTER", "Modify table structure" },
-        .{ "FROM", "Specify source table(s)" },
-        .{ "WHERE", "Filter rows with conditions" },
-        .{ "JOIN", "Combine rows from multiple tables" },
-        .{ "INNER", "Return matching rows from both tables" },
-        .{ "LEFT", "Return all left table rows + matches" },
-        .{ "RIGHT", "Return all right table rows + matches" },
-        .{ "FULL", "Return all rows with matches where available" },
-        .{ "ON", "Specify join condition" },
-        .{ "GROUP", "Aggregate rows by column values" },
-        .{ "HAVING", "Filter grouped results" },
-        .{ "ORDER", "Sort result rows" },
-        .{ "BY", "Specify sort/group column(s)" },
-        .{ "LIMIT", "Restrict number of rows returned" },
-        .{ "OFFSET", "Skip N rows before returning results" },
-        .{ "DISTINCT", "Remove duplicate rows" },
-        .{ "AS", "Rename column or table (alias)" },
-        .{ "AND", "Combine conditions (both must be true)" },
-        .{ "OR", "Combine conditions (either can be true)" },
-        .{ "NOT", "Negate a condition" },
-        .{ "NULL", "Represents missing or unknown value" },
-        .{ "IS", "Test for NULL values" },
-        .{ "IN", "Match any value in a list" },
-        .{ "BETWEEN", "Match values in a range" },
-        .{ "LIKE", "Match text patterns (% and _ wildcards)" },
-        .{ "EXISTS", "Check if subquery returns rows" },
-        .{ "CASE", "Conditional expression (if-then-else)" },
-        .{ "WHEN", "Condition in CASE expression" },
-        .{ "THEN", "Result when WHEN condition is true" },
-        .{ "ELSE", "Default result in CASE expression" },
-        .{ "END", "Close CASE or compound statement" },
-        .{ "UNION", "Combine results from multiple queries" },
-        .{ "INTERSECT", "Return common rows from queries" },
-        .{ "EXCEPT", "Return rows from first query not in second" },
-        .{ "PRIMARY", "Uniquely identifies rows (PRIMARY KEY)" },
-        .{ "FOREIGN", "References another table (FOREIGN KEY)" },
-        .{ "KEY", "Constraint or index" },
-        .{ "UNIQUE", "Prevent duplicate values in column" },
-        .{ "CHECK", "Validate column values with condition" },
-        .{ "DEFAULT", "Specify default column value" },
-        .{ "INDEX", "Speed up queries on column(s)" },
-        .{ "VIEW", "Virtual table from a query" },
-        .{ "TRANSACTION", "Atomic unit of work (BEGIN...COMMIT)" },
-        .{ "BEGIN", "Start transaction" },
-        .{ "COMMIT", "Save transaction changes" },
-        .{ "ROLLBACK", "Discard transaction changes" },
-        .{ "SAVEPOINT", "Create rollback point within transaction" },
-        .{ "RELEASE", "Remove savepoint" },
-        .{ "WITH", "Define CTE (Common Table Expression)" },
-        .{ "RECURSIVE", "Enable recursive CTE" },
-        .{ "OVER", "Define window for window function" },
-        .{ "PARTITION", "Divide rows into groups for window" },
-        .{ "ROWS", "Define window frame by row count" },
-        .{ "RANGE", "Define window frame by value range" },
-        .{ "ANALYZE", "Collect table statistics for optimizer" },
-        .{ "EXPLAIN", "Show query execution plan" },
-        .{ "VACUUM", "Reclaim storage and optimize database" },
-        .{ "REINDEX", "Rebuild index from scratch" },
-    });
-
-    return help_map.get(upper);
+    if (keyword.len > sql_keyword_length_max) return null;
+    var upper_buf: [sql_keyword_length_max]u8 = undefined;
+    const upper = std.ascii.upperString(&upper_buf, keyword);
+    return sql_keyword_help.get(upper);
 }
 
 // Get table metadata tooltip (shows column info)
@@ -4747,6 +4756,17 @@ test "getSqlKeywordHelp returns help for known keywords" {
         getSqlKeywordHelp("LIMIT").?,
     );
     try std.testing.expectEqualStrings("Remove duplicate rows", getSqlKeywordHelp("DISTINCT").?);
+}
+
+test "getSqlKeywordHelp returns null for input longer than any keyword" {
+    const at_limit = "A" ** sql_keyword_length_max;
+    const over_limit = "A" ** (sql_keyword_length_max + 1);
+    try std.testing.expect(getSqlKeywordHelp(at_limit) == null);
+    try std.testing.expect(getSqlKeywordHelp(over_limit) == null);
+    try std.testing.expectEqualStrings(
+        "Close CASE or compound statement",
+        getSqlKeywordHelp("end").?,
+    );
 }
 
 test "getSqlKeywordHelp returns null for unknown keywords" {

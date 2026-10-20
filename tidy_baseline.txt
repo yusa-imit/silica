@@ -8,7 +8,6 @@ function_length:src/cli.zig:readAndExecuteFile:74
 function_length:src/cli.zig:saveDatabase:232
 function_length:src/cli.zig:importCsvFile:84
 function_length:src/cli.zig:handleDotCommand:427
-function_length:src/tui.zig:getSqlKeywordHelp:73
 function_length:src/tui.zig:renderUI:183
 function_length:src/tui.zig:renderCompletionPopup:105
 function_length:src/tui.zig:renderBracketViewer:73
