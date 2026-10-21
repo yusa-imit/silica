@@ -2766,6 +2766,21 @@ fn renderKanbanBoard(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     kb.render(buf, popup_area);
 }
 
+/// Builds one plan-bracket match: `team_b` wins when `sql` contains `keyword`
+/// (case-insensitive), otherwise `team_a` wins.
+fn bracketMatch(
+    sql: []const u8,
+    team_a: []const u8,
+    team_b: []const u8,
+    keyword: []const u8,
+) sailor.bracket_viewer.Match {
+    std.debug.assert(keyword.len > 0);
+    std.debug.assert(team_a.len > 0);
+    std.debug.assert(team_b.len > 0);
+    const winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, keyword)) .b else .a;
+    return .{ .team_a = team_a, .team_b = team_b, .winner = winner };
+}
+
 fn renderBracketViewer(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.bracket_visible) return;
 
@@ -2776,41 +2791,14 @@ fn renderBracketViewer(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     const sql = app.plan_sql_buf[0..app.plan_sql_len];
 
     // Round 1 "Storage": 1 match [Seq Scan vs Index Scan]
-    const storage_winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, "WHERE")) .b else .a;
-    const storage_match = sailor.bracket_viewer.Match{
-        .team_a = "Seq Scan",
-        .team_b = "Index Scan",
-        .winner = storage_winner,
-    };
+    const storage_match = bracketMatch(sql, "Seq Scan", "Index Scan", "WHERE");
 
     // Round 2 "Logic": 2 matches
-    const filter_winner: sailor.bracket_viewer.Winner = if (sqlContains(sql, "JOIN")) .b else .a;
-    const filter_match = sailor.bracket_viewer.Match{
-        .team_a = "Filter",
-        .team_b = "Join",
-        .winner = filter_winner,
-    };
-
-    const aggregate_winner: sailor.bracket_viewer.Winner = if (sqlContains(
-        sql,
-        "GROUP BY",
-    )) .b else .a;
-    const aggregate_match = sailor.bracket_viewer.Match{
-        .team_a = "Project",
-        .team_b = "Aggregate",
-        .winner = aggregate_winner,
-    };
+    const filter_match = bracketMatch(sql, "Filter", "Join", "JOIN");
+    const aggregate_match = bracketMatch(sql, "Project", "Aggregate", "GROUP BY");
 
     // Round 3 "Output": 1 match [Project vs Sort]
-    const output_winner: sailor.bracket_viewer.Winner = if (sqlContains(
-        sql,
-        "ORDER BY",
-    )) .b else .a;
-    const output_match = sailor.bracket_viewer.Match{
-        .team_a = "Project",
-        .team_b = "Sort",
-        .winner = output_winner,
-    };
+    const output_match = bracketMatch(sql, "Project", "Sort", "ORDER BY");
 
     // Build round arrays (no titles in API, just matches)
     var rounds: [3]sailor.bracket_viewer.Round = undefined;
@@ -4767,6 +4755,24 @@ test "getSqlKeywordHelp returns null for input longer than any keyword" {
         "Close CASE or compound statement",
         getSqlKeywordHelp("end").?,
     );
+}
+
+test "bracketMatch picks the second team only when the keyword is present" {
+    const with_keyword = bracketMatch(
+        "select * from t where x = 1",
+        "Seq Scan",
+        "Index Scan",
+        "WHERE",
+    );
+    try std.testing.expectEqualStrings("Seq Scan", with_keyword.team_a);
+    try std.testing.expectEqualStrings("Index Scan", with_keyword.team_b);
+    try std.testing.expectEqual(sailor.bracket_viewer.Winner.b, with_keyword.winner);
+
+    const without_keyword = bracketMatch("select * from t", "Seq Scan", "Index Scan", "WHERE");
+    try std.testing.expectEqual(sailor.bracket_viewer.Winner.a, without_keyword.winner);
+
+    const empty_sql = bracketMatch("", "Project", "Sort", "ORDER BY");
+    try std.testing.expectEqual(sailor.bracket_viewer.Winner.a, empty_sql.winner);
 }
 
 test "getSqlKeywordHelp returns null for unknown keywords" {
