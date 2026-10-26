@@ -2978,55 +2978,39 @@ fn renderMindMap(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     map.render(buf, popup_area);
 }
 
+/// Share of `entries` per RADAR_AXES slot: SELECT, INSERT, UPDATE, DELETE, DDL, Error.
+/// Failed queries count as Error only; an empty history yields all zeros.
+fn radarFractions(entries: []const QueryHistoryEntry) [RADAR_AXES.len]f32 {
+    std.debug.assert(entries.len <= QUERY_HISTORY_MAX);
+    var counts = [_]f32{0} ** RADAR_AXES.len;
+    const verbs = [_][]const u8{ "select", "insert", "update", "delete" };
+
+    for (entries) |entry| {
+        if (!entry.success) {
+            counts[5] += 1;
+            continue;
+        }
+        const head = entry.title[0..@min(entry.title_len, 6)];
+        const slot = for (verbs, 0..) |verb, verb_index| {
+            if (head.len == 6 and std.ascii.eqlIgnoreCase(head, verb)) break verb_index;
+        } else 4;
+        counts[slot] += 1;
+    }
+
+    const total: f32 = @floatFromInt(@max(entries.len, 1));
+    var fractions = [_]f32{0} ** RADAR_AXES.len;
+    for (&fractions, counts) |*fraction, count| fraction.* = count / total;
+    return fractions;
+}
+
 fn renderRadarChart(app: *App, buf: *tui.Buffer, area: tui.Rect) void {
     if (!app.radar_visible) return;
 
     // Centered overlay: ~60% width, ~75% height
     const popup_area = clearOverlay(buf, area, 6, 10, 3, 4);
 
-    // Build series from query history
     const actual_count = @min(app.query_history_count, QUERY_HISTORY_MAX);
-    var n_select: f32 = 0;
-    var n_insert: f32 = 0;
-    var n_update: f32 = 0;
-    var n_delete: f32 = 0;
-    var n_ddl: f32 = 0;
-    var n_err: f32 = 0;
-
-    for (app.query_history[0..actual_count]) |entry| {
-        if (!entry.success) {
-            n_err += 1;
-            continue;
-        }
-        const upper = entry.title[0..@min(entry.title_len, 6)];
-        if (std.mem.startsWith(u8, upper, "SELECT") or std.mem.startsWith(u8, upper, "select")) {
-            n_select += 1;
-        } else if (std.mem.startsWith(u8, upper, "INSERT") or
-            std.mem.startsWith(u8, upper, "insert"))
-        {
-            n_insert += 1;
-        } else if (std.mem.startsWith(u8, upper, "UPDATE") or
-            std.mem.startsWith(u8, upper, "update"))
-        {
-            n_update += 1;
-        } else if (std.mem.startsWith(u8, upper, "DELETE") or
-            std.mem.startsWith(u8, upper, "delete"))
-        {
-            n_delete += 1;
-        } else {
-            n_ddl += 1;
-        }
-    }
-
-    const total: f32 = @floatFromInt(@max(actual_count, 1));
-    const actual_values = [_]f32{
-        n_select / total,
-        n_insert / total,
-        n_update / total,
-        n_delete / total,
-        n_ddl / total,
-        n_err / total,
-    };
+    const actual_values = radarFractions(app.query_history[0..actual_count]);
 
     // Series 0: actual distribution; Series 1: ideal (balanced) baseline
     const ideal_val: f32 = 1.0 / @as(f32, @floatFromInt(RADAR_AXES.len));
@@ -4773,6 +4757,36 @@ test "bracketMatch picks the second team only when the keyword is present" {
 
     const empty_sql = bracketMatch("", "Project", "Sort", "ORDER BY");
     try std.testing.expectEqual(sailor.bracket_viewer.Winner.a, empty_sql.winner);
+}
+
+test "radarFractions counts each query kind and errors as a share of the history" {
+    var entries: [5]QueryHistoryEntry = std.mem.zeroes([5]QueryHistoryEntry);
+    const titles = [_][]const u8{
+        "SELECT 1",
+        "insert into t",
+        "CREATE TABLE t",
+        "DELETE FROM t",
+        "x",
+    };
+    for (&entries, titles) |*entry, title| {
+        @memcpy(entry.title[0..title.len], title);
+        entry.title_len = title.len;
+        entry.success = true;
+    }
+    entries[4].success = false;
+
+    const fractions = radarFractions(&entries);
+    try std.testing.expectEqual(@as(f32, 0.2), fractions[0]);
+    try std.testing.expectEqual(@as(f32, 0.2), fractions[1]);
+    try std.testing.expectEqual(@as(f32, 0.0), fractions[2]);
+    try std.testing.expectEqual(@as(f32, 0.2), fractions[3]);
+    try std.testing.expectEqual(@as(f32, 0.2), fractions[4]);
+    try std.testing.expectEqual(@as(f32, 0.2), fractions[5]);
+}
+
+test "radarFractions of an empty history is all zeros" {
+    const fractions = radarFractions(&.{});
+    for (fractions) |fraction| try std.testing.expectEqual(@as(f32, 0.0), fraction);
 }
 
 test "getSqlKeywordHelp returns null for unknown keywords" {
