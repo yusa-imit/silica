@@ -10,7 +10,6 @@ function_length:src/cli.zig:importCsvFile:84
 function_length:src/cli.zig:handleDotCommand:427
 function_length:src/tui.zig:renderUI:183
 function_length:src/tui.zig:renderCompletionPopup:105
-function_length:src/tui.zig:renderRadarChart:73
 function_length:src/tui.zig:run:73
 function_length:src/sql/catalog.zig:serializeTableFull:111
 function_length:src/sql/catalog.zig:deserializeTable:219
