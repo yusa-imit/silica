@@ -1917,8 +1917,19 @@ fn readAndExecuteFile(
         }
     }
 
-    // Check for unterminated statement
-    if (std.mem.trim(u8, statement_buf.items, " \t\r\n").len > 0) {
+    reportScriptEnd(stdout, stderr, statement_buf.items, statement_count, filename);
+}
+
+/// Warn about a trailing unterminated statement, then print the executed count.
+fn reportScriptEnd(
+    stdout: anytype,
+    stderr: anytype,
+    pending: []const u8,
+    statement_count: usize,
+    filename: []const u8,
+) void {
+    std.debug.assert(filename.len > 0);
+    if (std.mem.trim(u8, pending, " \t\r\n").len > 0) {
         printError(stderr, "Warning: Unterminated statement at end of file (missing ';')");
     }
 
@@ -12319,6 +12330,31 @@ test "handleDotCommand .help - includes .shell command" {
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, ".shell") != null);
+}
+
+test "reportScriptEnd - complete script prints count only" {
+    var buf: [128]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var ebuf: [128]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+
+    reportScriptEnd(fbs.writer(), efbs.writer(), " \t\r\n", 2, "a.sql");
+
+    try std.testing.expectEqualStrings("Executed 2 statement(s) from a.sql\n", fbs.getWritten());
+    try std.testing.expectEqual(@as(usize, 0), efbs.getWritten().len);
+}
+
+test "reportScriptEnd - unterminated statement warns" {
+    var buf: [128]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    var ebuf: [256]u8 = undefined;
+    var efbs = std.io.fixedBufferStream(&ebuf);
+
+    reportScriptEnd(fbs.writer(), efbs.writer(), "SELECT 1", 0, "b.sql");
+
+    try std.testing.expectEqualStrings("Executed 0 statement(s) from b.sql\n", fbs.getWritten());
+    const warning = efbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, warning, "Unterminated statement") != null);
 }
 
 // Import wire_fuzz tests
