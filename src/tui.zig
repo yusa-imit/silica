@@ -4171,6 +4171,21 @@ fn localRenderDiff(diff_ops: []const tui.buffer.DiffOp, writer: anytype) !void {
 
 // ── Public Entry Point ───────────────────────
 
+/// Enters the alternate screen and hides the cursor. Best effort: a terminal that rejects the
+/// sequences still works, so write failures are ignored.
+fn writeScreenEnter(w: *std.Io.Writer) void {
+    w.writeAll("\x1b[?1049h") catch {}; // Best effort: enter alt screen.
+    w.writeAll("\x1b[?25l") catch {}; // Best effort: hide cursor.
+    w.flush() catch {}; // Best effort: nothing to recover on a dead terminal.
+}
+
+/// Shows the cursor and leaves the alternate screen, the exact inverse of `writeScreenEnter`.
+fn writeScreenLeave(w: *std.Io.Writer) void {
+    w.writeAll("\x1b[?25h") catch {}; // Best effort: show cursor.
+    w.writeAll("\x1b[?1049l") catch {}; // Best effort: leave alt screen.
+    w.flush() catch {}; // Best effort: nothing to recover on a dead terminal.
+}
+
 pub fn run(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) !void {
     const builtin = @import("builtin");
     if (comptime builtin.os.tag == .windows) {
@@ -4190,15 +4205,11 @@ pub fn run(allocator: std.mem.Allocator, db: *Database, db_path: []const u8) !vo
     var stdout_buf: [4096]u8 = undefined;
     var writer = stdout.writer(&stdout_buf);
 
-    writer.interface.writeAll("\x1b[?1049h") catch {}; // enter alt screen
-    writer.interface.writeAll("\x1b[?25l") catch {}; // hide cursor
-    writer.interface.flush() catch {};
+    writeScreenEnter(&writer.interface);
 
     defer {
         var dw = stdout.writer(&stdout_buf);
-        dw.interface.writeAll("\x1b[?25h") catch {}; // show cursor
-        dw.interface.writeAll("\x1b[?1049l") catch {}; // leave alt screen
-        dw.interface.flush() catch {};
+        writeScreenLeave(&dw.interface);
     }
 
     // Initialize app state
@@ -9672,4 +9683,24 @@ test "matrixRowIndex: classifies verbs, DDL, and failures" {
     try std.testing.expectEqual(@as(usize, 4), matrixRowIndex(true, ""));
     try std.testing.expectEqual(@as(usize, 4), matrixRowIndex(true, "SEL"));
     try std.testing.expectEqual(@as(usize, 5), matrixRowIndex(false, "SELECT"));
+}
+
+test "writeScreenEnter and writeScreenLeave: emit inverse sequences" {
+    var buf: [64]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    writeScreenEnter(&w);
+    try std.testing.expectEqualStrings("\x1b[?1049h\x1b[?25l", w.buffered());
+
+    var buf2: [64]u8 = undefined;
+    var w2 = std.Io.Writer.fixed(&buf2);
+    writeScreenLeave(&w2);
+    try std.testing.expectEqualStrings("\x1b[?25h\x1b[?1049l", w2.buffered());
+}
+
+test "writeScreenEnter: a full writer truncates the sequence without failing" {
+    var buf: [4]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    writeScreenEnter(&w);
+    // Only the first 4 bytes of the alt-screen sequence fit; later writes fail and are ignored.
+    try std.testing.expectEqualStrings("\x1b[?1", w.buffered());
 }
