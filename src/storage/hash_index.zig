@@ -273,6 +273,34 @@ fn retrieveValuePages(
     return result;
 }
 
+/// Returns true when `key` is stored in the entries of this bucket/overflow page.
+/// A malformed entry ends the scan early (reported as not found), never reads past the page.
+fn pageHasKey(frame: *const BufferFrame, key: []const u8) bool {
+    const entry_count = std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
+    var offset: usize = PAGE_HEADER_SIZE + 6;
+
+    for (0..entry_count) |_| {
+        if (offset + 10 > frame.data.len) return false;
+
+        const klen_result = varint.decode(frame.data[offset..]) catch return false;
+        const key_len = klen_result.value;
+        offset += klen_result.bytes_read;
+
+        if (offset + key_len > frame.data.len) return false;
+        const stored_key = frame.data[offset .. offset + key_len];
+        offset += key_len;
+
+        const vlen_result = varint.decode(frame.data[offset..]) catch return false;
+        const value_len = vlen_result.value;
+        offset += vlen_result.bytes_read;
+
+        if (std.mem.eql(u8, stored_key, key)) return true;
+
+        offset += if (value_len > 0) value_len else 4; // 4 for page_id if external
+    }
+    return false;
+}
+
 fn insertIntoChain(pool: *BufferPool, head_page_id: u32, key: []const u8, value: []const u8) !void {
     // If value is too large, store it separately
     var value_page_id: u32 = 0;
@@ -292,33 +320,8 @@ fn insertIntoChain(pool: *BufferPool, head_page_id: u32, key: []const u8, value:
         const frame = try pool.fetchPage(current_page_id);
         defer pool.unpinPage(current_page_id, false);
 
-        // Check if key already exists
-        const entry_count =
-            std.mem.readInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], .little);
-        const entries_start = PAGE_HEADER_SIZE + 6;
-        var offset: usize = entries_start;
+        if (pageHasKey(frame, key)) return Error.DuplicateKey;
 
-        for (0..entry_count) |_| {
-            if (offset + 10 > frame.data.len) break;
-
-            const klen_result = varint.decode(frame.data[offset..]) catch break;
-            const key_len = klen_result.value;
-            offset += klen_result.bytes_read;
-
-            if (offset + key_len > frame.data.len) break;
-            const stored_key = frame.data[offset .. offset + key_len];
-            offset += key_len;
-
-            const vlen_result = varint.decode(frame.data[offset..]) catch break;
-            const value_len = vlen_result.value;
-            offset += vlen_result.bytes_read;
-
-            if (std.mem.eql(u8, stored_key, key)) {
-                return Error.DuplicateKey;
-            }
-
-            offset += if (value_len > 0) value_len else 4; // 4 for page_id if external
-        }
         // Check if next page exists
         const next_page_id = std.mem.readInt(u32, frame.data[PAGE_HEADER_SIZE..][0..4], .little);
         if (next_page_id == 0) {
@@ -1556,4 +1559,40 @@ test "HashIndex: PageFull error when bucket page at capacity" {
 
     // Document that errors can occur under resource constraints
     try std.testing.expect(hit_error or i > 10);
+}
+
+test "pageHasKey: finds stored keys, rejects absent and truncated pages" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    var path_buf: [512]u8 = undefined;
+    const test_path = try std.fmt.bufPrint(&path_buf, "{s}/page_has_key.db", .{dir_path});
+
+    var pager = try Pager.init(allocator, test_path, .{});
+    defer pager.deinit();
+
+    const page_id = try pager.allocPage();
+
+    var pool = try BufferPool.init(allocator, &pager, 5);
+    defer pool.deinit();
+
+    try initializeOverflowPage(&pool, page_id);
+    const frame = try pool.fetchPage(page_id);
+    defer pool.unpinPage(page_id, true);
+
+    try std.testing.expect(!pageHasKey(frame, "alpha"));
+    try std.testing.expect(tryInsertEntry(frame, "alpha", "one"));
+    try std.testing.expect(tryInsertEntry(frame, "beta", ""));
+    try std.testing.expect(pageHasKey(frame, "alpha"));
+    try std.testing.expect(pageHasKey(frame, "beta"));
+    try std.testing.expect(!pageHasKey(frame, "alph"));
+    try std.testing.expect(!pageHasKey(frame, "gamma"));
+
+    // Corrupt the entry count so the scan runs off the page: it must stop, not trap.
+    std.mem.writeInt(u16, frame.data[PAGE_HEADER_SIZE + 4 ..][0..2], 60000, .little);
+    try std.testing.expect(!pageHasKey(frame, "gamma"));
 }
