@@ -1629,6 +1629,30 @@ fn setOpDisplayName(op: ast.SetOpType) []const u8 {
 /// Format a logical plan as indented text (for EXPLAIN output).
 pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
     for (0..depth) |_| try writer.writeAll("  ");
+    try formatPlanHeader(node, writer);
+    switch (node.*) {
+        .scan, .table_function_scan, .values_table_scan, .values, .empty => {},
+        .filter => |f| try formatPlan(f.input, writer, depth + 1),
+        .project => |p| try formatPlan(p.input, writer, depth + 1),
+        .join => |j| {
+            try formatPlan(j.left, writer, depth + 1);
+            try formatPlan(j.right, writer, depth + 1);
+        },
+        .sort => |s| try formatPlan(s.input, writer, depth + 1),
+        .aggregate => |a| try formatPlan(a.input, writer, depth + 1),
+        .limit => |l| try formatPlan(l.input, writer, depth + 1),
+        .set_op => |s| {
+            try formatPlan(s.left, writer, depth + 1);
+            try formatPlan(s.right, writer, depth + 1);
+        },
+        .distinct => |d| try formatPlan(d.input, writer, depth + 1),
+        .window => |w| try formatPlan(w.input, writer, depth + 1),
+        .match_recognize => |mr| try formatPlan(mr.input, writer, depth + 1),
+    }
+}
+
+/// Write the one-line EXPLAIN description of `node` (no indentation, no children).
+fn formatPlanHeader(node: *const PlanNode, writer: anytype) !void {
     switch (node.*) {
         .scan => |s| {
             // Step 6: Distinguish index-only scan from regular scan for testing/visibility
@@ -1648,66 +1672,38 @@ pub fn formatPlan(node: *const PlanNode, writer: anytype, depth: usize) !void {
         .values_table_scan => |vts| {
             try writer.print("ValuesTable: {s} ({d} rows)\n", .{ vts.alias, vts.rows.len });
         },
-        .filter => |f| {
-            try writer.writeAll("Filter\n");
-            try formatPlan(f.input, writer, depth + 1);
-        },
-        .project => |p| {
-            try writer.print("Project ({d} columns)\n", .{p.columns.len});
-            try formatPlan(p.input, writer, depth + 1);
-        },
-        .join => |j| {
-            try writer.print("Join ({s})\n", .{@tagName(j.join_type)});
-            try formatPlan(j.left, writer, depth + 1);
-            try formatPlan(j.right, writer, depth + 1);
-        },
-        .sort => |s| {
-            try writer.print("Sort ({d} keys)\n", .{s.order_by.len});
-            try formatPlan(s.input, writer, depth + 1);
-        },
+        .filter => try writer.writeAll("Filter\n"),
+        .project => |p| try writer.print("Project ({d} columns)\n", .{p.columns.len}),
+        .join => |j| try writer.print("Join ({s})\n", .{@tagName(j.join_type)}),
+        .sort => |s| try writer.print("Sort ({d} keys)\n", .{s.order_by.len}),
         .aggregate => |a| {
             try writer.print(
                 "Aggregate ({d} groups, {d} aggs)\n",
                 .{ a.group_by.len, a.aggregates.len },
             );
-            try formatPlan(a.input, writer, depth + 1);
         },
         .limit => |l| {
             try writer.writeAll("Limit");
             if (l.offset_expr != null) try writer.writeAll("+Offset");
             try writer.writeAll("\n");
-            try formatPlan(l.input, writer, depth + 1);
         },
-        .set_op => |s| {
-            try writer.print("SetOp: {s}\n", .{setOpDisplayName(s.op)});
-            try formatPlan(s.left, writer, depth + 1);
-            try formatPlan(s.right, writer, depth + 1);
-        },
+        .set_op => |s| try writer.print("SetOp: {s}\n", .{setOpDisplayName(s.op)}),
         .distinct => |d| {
             if (d.on_exprs.len > 0) {
                 try writer.print("Distinct On ({d} exprs)\n", .{d.on_exprs.len});
             } else {
                 try writer.writeAll("Distinct\n");
             }
-            try formatPlan(d.input, writer, depth + 1);
         },
-        .window => |w| {
-            try writer.print("Window ({d} funcs)\n", .{w.funcs.len});
-            try formatPlan(w.input, writer, depth + 1);
-        },
+        .window => |w| try writer.print("Window ({d} funcs)\n", .{w.funcs.len}),
         .match_recognize => |mr| {
             try writer.print(
                 "MatchRecognize (rows_per_match={s}, skip={s})\n",
                 .{ @tagName(mr.spec.rows_per_match), @tagName(mr.spec.after_match_skip) },
             );
-            try formatPlan(mr.input, writer, depth + 1);
         },
-        .values => |v| {
-            try writer.print("Values: {s} ({d} rows)\n", .{ v.table, v.rows.len });
-        },
-        .empty => |e| {
-            try writer.print("Empty: {s}\n", .{e.description});
-        },
+        .values => |v| try writer.print("Values: {s} ({d} rows)\n", .{ v.table, v.rows.len }),
+        .empty => |e| try writer.print("Empty: {s}\n", .{e.description}),
     }
 }
 
@@ -2305,6 +2301,31 @@ test "formatPlan simple select" {
     const output = fbs.getWritten();
     try testing.expect(std.mem.indexOf(u8, output, "Project") != null);
     try testing.expect(std.mem.indexOf(u8, output, "Scan: users") != null);
+}
+
+test "formatPlanHeader describes one node without children or indentation" {
+    const scan: PlanNode = .{ .scan = .{ .table = "t", .alias = "x", .index_only = true } };
+    const filter: PlanNode = .{ .filter = .{ .input = &scan, .predicate = undefined } };
+    const empty: PlanNode = .{ .empty = .{ .description = "none" } };
+
+    var buf: [128]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try formatPlanHeader(&scan, &w);
+    try testing.expectEqualStrings("Index Only Scan: t AS x\n", w.buffered());
+
+    // A filter prints only its own line; the child scan is formatPlan's job.
+    w = .fixed(&buf);
+    try formatPlanHeader(&filter, &w);
+    try testing.expectEqualStrings("Filter\n", w.buffered());
+
+    w = .fixed(&buf);
+    try formatPlanHeader(&empty, &w);
+    try testing.expectEqualStrings("Empty: none\n", w.buffered());
+
+    // formatPlan indents the child by two spaces per depth level.
+    w = .fixed(&buf);
+    try formatPlan(&filter, &w, 1);
+    try testing.expectEqualStrings("  Filter\n    Index Only Scan: t AS x\n", w.buffered());
 }
 
 test "formatPlan with filter and sort" {
