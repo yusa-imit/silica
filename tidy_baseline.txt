@@ -26,7 +26,6 @@ function_length:src/sql/executor.zig:parseFormattedDatetime:95
 function_length:src/sql/executor.zig:evalFunctionCall:3857
 function_length:src/sql/tokenizer.zig:lookupKeyword:262
 function_length:src/sql/planner.zig:deriveOutputSchemaFromNode:187
-function_length:src/sql/planner.zig:formatPlan:83
 function_length:src/sql/stats.zig:deserializeColumnStats:90
 function_length:src/replication/transport.zig:parseBackendMessage:89
 function_length:src/tx/jepsen_test.zig:phantomReadTest:132
