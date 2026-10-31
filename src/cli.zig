@@ -2481,13 +2481,7 @@ fn importCsvFile(
     // Read CSV file (max 100 MB)
     const max_size = 100 * 1024 * 1024;
     const csv_content = std.fs.cwd().readFileAlloc(allocator, csv_path, max_size) catch |err| {
-        const msg = switch (err) {
-            error.FileNotFound => "CSV file not found",
-            error.AccessDenied => "Access denied. Check file permissions",
-            error.FileTooBig => "CSV file too large (max 100 MB)",
-            else => "Failed to read CSV file",
-        };
-        printError(stderr, msg);
+        printError(stderr, csvReadErrorMessage(err));
         return;
     };
     defer allocator.free(csv_content);
@@ -2517,29 +2511,18 @@ fn importCsvFile(
         // Build INSERT statement
         if (values.items.len == 0) continue;
 
-        // Construct SQL: INSERT INTO table VALUES (?, ?, ...)
         var sql_buf: std.ArrayList(u8) = .{};
         defer sql_buf.deinit(allocator);
 
-        sql_buf.writer(allocator).print("INSERT INTO {s} VALUES (", .{table_name}) catch {
+        buildCsvInsert(allocator, &sql_buf, table_name, values.items) catch {
             printError(stderr, "Out of memory while building INSERT");
             return;
         };
 
-        for (values.items, 0..) |value, i| {
-            if (i > 0) sql_buf.writer(allocator).writeAll(", ") catch {};
-            appendQuotedSqlText(allocator, &sql_buf, value);
-        }
-        sql_buf.writer(allocator).writeAll(");") catch {};
-
         // Execute INSERT
         const sql = sql_buf.items;
         _ = db.exec(sql) catch |err| {
-            const msg = switch (err) {
-                error.TableNotFound => "Table not found. Create the table first",
-                error.UniqueConstraintViolation => "Duplicate key error. Row already exists",
-                else => "Failed to insert row",
-            };
+            const msg = csvInsertErrorMessage(err);
             stderr.print("Error importing row: {s}\n", .{msg}) catch {};
             stderr.print("SQL: {s}\n", .{sql}) catch {};
             continue;
@@ -2552,6 +2535,43 @@ fn importCsvFile(
         "Imported {d} rows from {s} into {s}\n",
         .{ rows_imported, csv_path, table_name },
     ) catch {};
+}
+
+/// Map a CSV file read failure to the message shown to the user.
+fn csvReadErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound => "CSV file not found",
+        error.AccessDenied => "Access denied. Check file permissions",
+        error.FileTooBig => "CSV file too large (max 100 MB)",
+        else => "Failed to read CSV file",
+    };
+}
+
+/// Map a failed CSV row INSERT to the message shown to the user.
+fn csvInsertErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.TableNotFound => "Table not found. Create the table first",
+        error.UniqueConstraintViolation => "Duplicate key error. Row already exists",
+        else => "Failed to insert row",
+    };
+}
+
+/// Build `INSERT INTO table VALUES ('a', 'b', ...);` into `sql_buf`; every value is quoted text.
+/// Precondition: `values` is non-empty and `sql_buf` is empty.
+fn buildCsvInsert(
+    allocator: std.mem.Allocator,
+    sql_buf: *std.ArrayList(u8),
+    table_name: []const u8,
+    values: []const []const u8,
+) error{OutOfMemory}!void {
+    std.debug.assert(values.len > 0);
+    std.debug.assert(sql_buf.items.len == 0);
+    try sql_buf.writer(allocator).print("INSERT INTO {s} VALUES (", .{table_name});
+    for (values, 0..) |value, i| {
+        if (i > 0) sql_buf.writer(allocator).writeAll(", ") catch {};
+        appendQuotedSqlText(allocator, sql_buf, value);
+    }
+    sql_buf.writer(allocator).writeAll(");") catch {};
 }
 
 /// Trim blanks and one pair of surrounding double quotes from a CSV field.
@@ -12342,6 +12362,60 @@ test "reportScriptEnd - complete script prints count only" {
 
     try std.testing.expectEqualStrings("Executed 2 statement(s) from a.sql\n", fbs.getWritten());
     try std.testing.expectEqual(@as(usize, 0), efbs.getWritten().len);
+}
+
+test "csvReadErrorMessage - maps known errors and falls back" {
+    try std.testing.expectEqualStrings(
+        "CSV file not found",
+        csvReadErrorMessage(error.FileNotFound),
+    );
+    try std.testing.expectEqualStrings(
+        "Access denied. Check file permissions",
+        csvReadErrorMessage(error.AccessDenied),
+    );
+    try std.testing.expectEqualStrings(
+        "CSV file too large (max 100 MB)",
+        csvReadErrorMessage(error.FileTooBig),
+    );
+    try std.testing.expectEqualStrings(
+        "Failed to read CSV file",
+        csvReadErrorMessage(error.Unexpected),
+    );
+}
+
+test "csvInsertErrorMessage - maps known errors and falls back" {
+    try std.testing.expectEqualStrings(
+        "Table not found. Create the table first",
+        csvInsertErrorMessage(error.TableNotFound),
+    );
+    try std.testing.expectEqualStrings(
+        "Duplicate key error. Row already exists",
+        csvInsertErrorMessage(error.UniqueConstraintViolation),
+    );
+    try std.testing.expectEqualStrings(
+        "Failed to insert row",
+        csvInsertErrorMessage(error.OutOfMemory),
+    );
+}
+
+test "buildCsvInsert - quotes values and doubles embedded quotes" {
+    const gpa = std.testing.allocator;
+    var sql_buf: std.ArrayList(u8) = .{};
+    defer sql_buf.deinit(gpa);
+
+    const values = [_][]const u8{ "1", "it's", "" };
+    try buildCsvInsert(gpa, &sql_buf, "t", &values);
+    try std.testing.expectEqualStrings("INSERT INTO t VALUES ('1', 'it''s', '');", sql_buf.items);
+}
+
+test "buildCsvInsert - single value has no separator" {
+    const gpa = std.testing.allocator;
+    var sql_buf: std.ArrayList(u8) = .{};
+    defer sql_buf.deinit(gpa);
+
+    const values = [_][]const u8{"x"};
+    try buildCsvInsert(gpa, &sql_buf, "tbl", &values);
+    try std.testing.expectEqualStrings("INSERT INTO tbl VALUES ('x');", sql_buf.items);
 }
 
 test "reportScriptEnd - unterminated statement warns" {

@@ -5,7 +5,6 @@
 # `line_length` entries cap the number of lines over 100 columns per file.
 function_length:src/cli.zig:main:229
 function_length:src/cli.zig:saveDatabase:232
-function_length:src/cli.zig:importCsvFile:84
 function_length:src/cli.zig:handleDotCommand:427
 function_length:src/tui.zig:renderUI:183
 function_length:src/tui.zig:renderCompletionPopup:105
