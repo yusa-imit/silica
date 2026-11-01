@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 // ── Statistics Structures ──────────────────────
 
@@ -181,19 +182,10 @@ pub fn deserializeColumnStats(allocator: Allocator, data: []const u8) !ColumnSta
     }
 
     for (0..mcv_count) |_| {
-        if (pos + 2 > data.len) return error.InvalidData;
-        const value_len = std.mem.readInt(u16, data[pos..][0..2], .little);
-        pos += 2;
+        const mcv = try readMostCommonValue(allocator, data, &pos);
+        errdefer mcv.deinit(allocator);
 
-        if (pos + value_len > data.len) return error.InvalidData;
-        const value = try allocator.dupe(u8, data[pos..][0..value_len]);
-        pos += value_len;
-
-        if (pos + 8 > data.len) return error.InvalidData;
-        const frequency = std.mem.bytesAsValue(f64, data[pos..][0..8]).*;
-        pos += 8;
-
-        try mcvs.append(allocator, .{ .value = value, .frequency = frequency });
+        try mcvs.append(allocator, mcv);
     }
 
     // Histogram buckets
@@ -208,29 +200,10 @@ pub fn deserializeColumnStats(allocator: Allocator, data: []const u8) !ColumnSta
     }
 
     for (0..bucket_count) |_| {
-        if (pos + 2 > data.len) return error.InvalidData;
-        const lower_len = std.mem.readInt(u16, data[pos..][0..2], .little);
-        pos += 2;
+        const bucket = try readHistogramBucket(allocator, data, &pos);
+        errdefer bucket.deinit(allocator);
 
-        if (pos + lower_len > data.len) return error.InvalidData;
-        const lower = try allocator.dupe(u8, data[pos..][0..lower_len]);
-        errdefer allocator.free(lower);
-        pos += lower_len;
-
-        if (pos + 2 > data.len) return error.InvalidData;
-        const upper_len = std.mem.readInt(u16, data[pos..][0..2], .little);
-        pos += 2;
-
-        if (pos + upper_len > data.len) return error.InvalidData;
-        const upper = try allocator.dupe(u8, data[pos..][0..upper_len]);
-        errdefer allocator.free(upper);
-        pos += upper_len;
-
-        if (pos + 8 > data.len) return error.InvalidData;
-        const count = std.mem.readInt(u64, data[pos..][0..8], .little);
-        pos += 8;
-
-        try buckets.append(allocator, .{ .lower = lower, .upper = upper, .count = count });
+        try buckets.append(allocator, bucket);
     }
 
     return ColumnStats{
@@ -241,6 +214,46 @@ pub fn deserializeColumnStats(allocator: Allocator, data: []const u8) !ColumnSta
         .most_common_values = try mcvs.toOwnedSlice(allocator),
         .histogram_buckets = try buckets.toOwnedSlice(allocator),
     };
+}
+
+/// Read a u16-length-prefixed byte string at `pos.*` and return an owned copy.
+/// Advances `pos` past the string on success; leaves it unspecified on error.
+fn readBytesDup(allocator: Allocator, data: []const u8, pos: *usize) ![]u8 {
+    assert(pos.* <= data.len);
+    if (pos.* + 2 > data.len) return error.InvalidData;
+    const len = std.mem.readInt(u16, data[pos.*..][0..2], .little);
+    pos.* += 2;
+
+    if (pos.* + len > data.len) return error.InvalidData;
+    const bytes = try allocator.dupe(u8, data[pos.*..][0..len]);
+    pos.* += len;
+    assert(pos.* <= data.len);
+    return bytes;
+}
+
+/// Read one serialized most-common-value entry (length-prefixed value + f64 frequency).
+fn readMostCommonValue(allocator: Allocator, data: []const u8, pos: *usize) !MostCommonValue {
+    const value = try readBytesDup(allocator, data, pos);
+    errdefer allocator.free(value);
+
+    if (pos.* + 8 > data.len) return error.InvalidData;
+    const frequency = std.mem.bytesAsValue(f64, data[pos.*..][0..8]).*;
+    pos.* += 8;
+    return .{ .value = value, .frequency = frequency };
+}
+
+/// Read one serialized histogram bucket (lower, upper, u64 count).
+fn readHistogramBucket(allocator: Allocator, data: []const u8, pos: *usize) !HistogramBucket {
+    const lower = try readBytesDup(allocator, data, pos);
+    errdefer allocator.free(lower);
+
+    const upper = try readBytesDup(allocator, data, pos);
+    errdefer allocator.free(upper);
+
+    if (pos.* + 8 > data.len) return error.InvalidData;
+    const count = std.mem.readInt(u64, data[pos.*..][0..8], .little);
+    pos.* += 8;
+    return .{ .lower = lower, .upper = upper, .count = count };
 }
 
 // ── Tests ────────────────────────────
@@ -569,4 +582,72 @@ test "ColumnStats with empty value in MCV" {
     try testing.expectEqual(@as(usize, 1), deserialized.most_common_values.len);
     try testing.expectEqual(@as(usize, 0), deserialized.most_common_values[0].value.len);
     try testing.expectEqual(@as(f64, 0.5), deserialized.most_common_values[0].frequency);
+}
+
+test "readBytesDup copies the string and advances pos" {
+    const data = [_]u8{ 0xFF, 0x03, 0x00, 'a', 'b', 'c', 0xEE };
+    var pos: usize = 1;
+
+    const bytes = try readBytesDup(testing.allocator, &data, &pos);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqualStrings("abc", bytes);
+    try testing.expectEqual(@as(usize, 6), pos);
+}
+
+test "readBytesDup rejects truncated length and body" {
+    var pos: usize = 0;
+    try testing.expectError(error.InvalidData, readBytesDup(testing.allocator, &[_]u8{0x01}, &pos));
+
+    pos = 0;
+    const short_body = [_]u8{ 0x04, 0x00, 'a', 'b' };
+    try testing.expectError(error.InvalidData, readBytesDup(testing.allocator, &short_body, &pos));
+}
+
+test "readMostCommonValue reads value then frequency and frees on truncation" {
+    const freq: f64 = 0.25;
+    var data: [2 + 2 + 8]u8 = undefined;
+    std.mem.writeInt(u16, data[0..2], 2, .little);
+    @memcpy(data[2..4], "hi");
+    @memcpy(data[4..12], std.mem.asBytes(&freq));
+    var pos: usize = 0;
+
+    const mcv = try readMostCommonValue(testing.allocator, &data, &pos);
+    defer mcv.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("hi", mcv.value);
+    try testing.expectEqual(freq, mcv.frequency);
+    try testing.expectEqual(@as(usize, 12), pos);
+
+    // Frequency missing: the duplicated value must not leak (testing.allocator checks).
+    pos = 0;
+    try testing.expectError(
+        error.InvalidData,
+        readMostCommonValue(testing.allocator, data[0..11], &pos),
+    );
+}
+
+test "readHistogramBucket reads both bounds and count, frees on truncation" {
+    var data: [2 + 1 + 2 + 2 + 8]u8 = undefined;
+    std.mem.writeInt(u16, data[0..2], 1, .little);
+    data[2] = 'a';
+    std.mem.writeInt(u16, data[3..5], 2, .little);
+    @memcpy(data[5..7], "zz");
+    std.mem.writeInt(u64, data[7..15], 99, .little);
+    var pos: usize = 0;
+
+    const bucket = try readHistogramBucket(testing.allocator, &data, &pos);
+    defer bucket.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("a", bucket.lower);
+    try testing.expectEqualStrings("zz", bucket.upper);
+    try testing.expectEqual(@as(u64, 99), bucket.count);
+    try testing.expectEqual(@as(usize, 15), pos);
+
+    // Upper bound truncated, then count truncated: lower/upper allocations must be freed.
+    pos = 0;
+    const gpa = testing.allocator;
+    try testing.expectError(error.InvalidData, readHistogramBucket(gpa, data[0..6], &pos));
+    pos = 0;
+    try testing.expectError(error.InvalidData, readHistogramBucket(gpa, data[0..14], &pos));
 }
