@@ -132,6 +132,17 @@ pub fn deinitFrontendMessage(allocator: Allocator, msg: *FrontendMessage) void {
     }
 }
 
+/// Read a little-endian u32 length followed by that many bytes into a fresh allocation.
+/// The caller owns the returned slice; nothing is leaked when the read fails part-way.
+fn readLengthPrefixedBytes(allocator: Allocator, reader: anytype) ![]u8 {
+    const len = try reader.readInt(u32, .little);
+    const bytes = try allocator.alloc(u8, @intCast(len));
+    errdefer allocator.free(bytes);
+
+    try reader.readNoEof(bytes);
+    return bytes;
+}
+
 /// Parse a BackendMessage from bytes using a reader
 pub fn parseBackendMessage(allocator: Allocator, reader: anytype) !BackendMessage {
     // Read tag byte
@@ -147,10 +158,8 @@ pub fn parseBackendMessage(allocator: Allocator, reader: anytype) !BackendMessag
             const wal_start = try reader.readInt(u64, .little);
             const wal_end = try reader.readInt(u64, .little);
             const server_timestamp = try reader.readInt(i64, .little);
-            const data_len = try reader.readInt(u32, .little);
-            const data = try allocator.alloc(u8, @intCast(data_len));
+            const data = try readLengthPrefixedBytes(allocator, reader);
             errdefer allocator.free(data);
-            try reader.readNoEof(data);
             return .{
                 .wal_data = .{
                     .wal_start = wal_start,
@@ -172,54 +181,54 @@ pub fn parseBackendMessage(allocator: Allocator, reader: anytype) !BackendMessag
                 },
             };
         },
-        .system_info => {
-            const system_id_len = try reader.readInt(u32, .little);
-            const system_id = try allocator.alloc(u8, @intCast(system_id_len));
-            errdefer allocator.free(system_id);
-            try reader.readNoEof(system_id);
-            const timeline_id = try reader.readInt(u32, .little);
-            const wal_position = try reader.readInt(u64, .little);
-            const database_name_len = try reader.readInt(u32, .little);
-            const database_name = try allocator.alloc(u8, @intCast(database_name_len));
-            errdefer allocator.free(database_name);
-            try reader.readNoEof(database_name);
-            return .{
-                .system_info = .{
-                    .system_id = system_id,
-                    .timeline_id = timeline_id,
-                    .wal_position = wal_position,
-                    .database_name = database_name,
-                },
-            };
-        },
+        .system_info => return parseSystemInfo(allocator, reader),
         .error_response => {
-            const message_len = try reader.readInt(u32, .little);
-            const message = try allocator.alloc(u8, @intCast(message_len));
+            const message = try readLengthPrefixedBytes(allocator, reader);
             errdefer allocator.free(message);
-            try reader.readNoEof(message);
             return .{ .error_response = .{ .message = message } };
         },
-        .backup_data => {
-            const file_path_len = try reader.readInt(u32, .little);
-            const file_path = try allocator.alloc(u8, @intCast(file_path_len));
-            errdefer allocator.free(file_path);
-            try reader.readNoEof(file_path);
-            const file_size = try reader.readInt(u64, .little);
-            const data_len = try reader.readInt(u32, .little);
-            const data = try allocator.alloc(u8, @intCast(data_len));
-            errdefer allocator.free(data);
-            try reader.readNoEof(data);
-            const is_last_chunk_byte = try reader.readByte();
-            return .{
-                .backup_data = .{
-                    .file_path = file_path,
-                    .file_size = file_size,
-                    .data = data,
-                    .is_last_chunk = is_last_chunk_byte != 0,
-                },
-            };
-        },
+        .backup_data => return parseBackupData(allocator, reader),
         else => return TransportError.InvalidMessageTag,
+    };
+}
+
+/// Parse the body of a system_info message (the tag byte is already consumed).
+fn parseSystemInfo(allocator: Allocator, reader: anytype) !BackendMessage {
+    const system_id = try readLengthPrefixedBytes(allocator, reader);
+    errdefer allocator.free(system_id);
+
+    const timeline_id = try reader.readInt(u32, .little);
+    const wal_position = try reader.readInt(u64, .little);
+    const database_name = try readLengthPrefixedBytes(allocator, reader);
+    errdefer allocator.free(database_name);
+
+    return .{
+        .system_info = .{
+            .system_id = system_id,
+            .timeline_id = timeline_id,
+            .wal_position = wal_position,
+            .database_name = database_name,
+        },
+    };
+}
+
+/// Parse the body of a backup_data message (the tag byte is already consumed).
+fn parseBackupData(allocator: Allocator, reader: anytype) !BackendMessage {
+    const file_path = try readLengthPrefixedBytes(allocator, reader);
+    errdefer allocator.free(file_path);
+
+    const file_size = try reader.readInt(u64, .little);
+    const data = try readLengthPrefixedBytes(allocator, reader);
+    errdefer allocator.free(data);
+
+    const is_last_chunk_byte = try reader.readByte();
+    return .{
+        .backup_data = .{
+            .file_path = file_path,
+            .file_size = file_size,
+            .data = data,
+            .is_last_chunk = is_last_chunk_byte != 0,
+        },
     };
 }
 
@@ -418,6 +427,68 @@ test "FrontendMessage round-trip: BASE_BACKUP" {
     defer deinitFrontendMessage(testing.allocator, @constCast(&parsed));
 
     try testing.expect(std.meta.activeTag(parsed) == std.meta.activeTag(original));
+}
+
+test "readLengthPrefixedBytes: reads prefix then payload, leaves rest" {
+    const wire = [_]u8{ 3, 0, 0, 0, 'a', 'b', 'c', 0xFF };
+    var fbs = std.io.fixedBufferStream(&wire);
+
+    const bytes = try readLengthPrefixedBytes(testing.allocator, fbs.reader());
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqualSlices(u8, "abc", bytes);
+    try testing.expectEqual(@as(u8, 0xFF), try fbs.reader().readByte());
+}
+
+test "readLengthPrefixedBytes: zero length yields empty slice" {
+    const wire = [_]u8{ 0, 0, 0, 0 };
+    var fbs = std.io.fixedBufferStream(&wire);
+
+    const bytes = try readLengthPrefixedBytes(testing.allocator, fbs.reader());
+    defer testing.allocator.free(bytes);
+
+    try testing.expectEqual(@as(usize, 0), bytes.len);
+}
+
+test "readLengthPrefixedBytes: truncated payload fails without leaking" {
+    const wire = [_]u8{ 5, 0, 0, 0, 'a', 'b' };
+    var fbs = std.io.fixedBufferStream(&wire);
+
+    try testing.expectError(
+        error.EndOfStream,
+        readLengthPrefixedBytes(testing.allocator, fbs.reader()),
+    );
+}
+
+test "parseBackendMessage: truncated backup_data frees earlier fields" {
+    const wire = [_]u8{
+        @intFromEnum(MessageTag.backup_data),
+        2, 0, 0, 0, 'a', 'b', // file_path
+        1, 0, 0, 0, 0, 0, 0, 0, // file_size
+        9, 0, 0, 0, 'x', // data claims 9 bytes, only 1 present
+    };
+    var fbs = std.io.fixedBufferStream(&wire);
+
+    try testing.expectError(
+        error.EndOfStream,
+        parseBackendMessage(testing.allocator, fbs.reader()),
+    );
+}
+
+test "parseBackendMessage: truncated system_info frees system_id" {
+    const wire = [_]u8{
+        @intFromEnum(MessageTag.system_info),
+        2, 0, 0, 0, 'i', 'd', // system_id
+        7, 0, 0, 0, // timeline_id
+        1, 0, 0, 0, 0, 0, 0, 0, // wal_position
+        4, 0, 0, 0, 'd', // database_name claims 4 bytes, only 1 present
+    };
+    var fbs = std.io.fixedBufferStream(&wire);
+
+    try testing.expectError(
+        error.EndOfStream,
+        parseBackendMessage(testing.allocator, fbs.reader()),
+    );
 }
 
 // ── BackendMessage decode round-trip tests ─────────────────
