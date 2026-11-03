@@ -11,7 +11,6 @@ function_length:src/tui.zig:renderCompletionPopup:105
 function_length:src/sql/catalog.zig:serializeTableFull:111
 function_length:src/sql/catalog.zig:deserializeTable:219
 function_length:src/sql/engine.zig:valueToIndexKey:102
-function_length:src/sql/executor.zig:textToTsvector:79
 function_length:src/sql/executor.zig:serializeValue:111
 function_length:src/sql/executor.zig:deserializeValue:106
 function_length:src/sql/executor.zig:evalExpr:296
