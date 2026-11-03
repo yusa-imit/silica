@@ -751,6 +751,27 @@ fn countVC(word: []const u8) usize {
     return count;
 }
 
+/// Lowercase `token`, drop it if it is a stop word, else append its stem to `tokens`.
+/// Precondition: `token` is non-empty. On success the list owns the appended stem.
+fn appendStemmedToken(
+    allocator: Allocator,
+    tokens: *std.ArrayListUnmanaged([]const u8),
+    token: []const u8,
+) Allocator.Error!void {
+    std.debug.assert(token.len > 0);
+    const lower = try allocator.alloc(u8, token.len);
+    defer allocator.free(lower);
+
+    for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
+    if (isStopWord(lower)) return;
+
+    const stemmed = try porterStem(allocator, lower);
+    errdefer allocator.free(stemmed);
+
+    try tokens.append(allocator, stemmed);
+    std.debug.assert(tokens.items.len > 0);
+}
+
 /// Convert text to tsvector with stemming and stop word removal.
 /// Tokenization: split on whitespace/punctuation, lowercase, stem, filter stop words, sort,
 /// deduplicate.
@@ -769,42 +790,13 @@ fn textToTsvector(allocator: Allocator, text: []const u8) ![]u8 {
             start = i;
             in_word = true;
         } else if (!is_alphanum and in_word) {
-            const token = text[start..i];
-            if (token.len > 0) {
-                // Lowercase the token
-                const lower = try allocator.alloc(u8, token.len);
-                errdefer allocator.free(lower);
-                for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
-
-                // Filter stop words
-                if (!isStopWord(lower)) {
-                    // Apply stemming
-                    const stemmed = try porterStem(allocator, lower);
-                    allocator.free(lower);
-                    try tokens.append(allocator, stemmed);
-                } else {
-                    allocator.free(lower);
-                }
-            }
+            try appendStemmedToken(allocator, &tokens, text[start..i]);
             in_word = false;
         }
     }
     // Handle final token
     if (in_word and start < text.len) {
-        const token = text[start..];
-        const lower = try allocator.alloc(u8, token.len);
-        errdefer allocator.free(lower);
-        for (token, 0..) |ch, j| lower[j] = std.ascii.toLower(ch);
-
-        // Filter stop words
-        if (!isStopWord(lower)) {
-            // Apply stemming
-            const stemmed = try porterStem(allocator, lower);
-            allocator.free(lower);
-            try tokens.append(allocator, stemmed);
-        } else {
-            allocator.free(lower);
-        }
+        try appendStemmedToken(allocator, &tokens, text[start..]);
     }
 
     if (tokens.items.len == 0) return allocator.dupe(u8, "");
@@ -19647,6 +19639,42 @@ test "to_tsvector: basic tokenization" {
 
     // Should be lowercased, stemmed, stop words removed ("the" filtered), sorted
     try std.testing.expectEqualStrings("brown fox quick", result);
+}
+
+test "appendStemmedToken: lowercases and stems, drops stop words" {
+    const allocator = std.testing.allocator;
+    var tokens = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (tokens.items) |t| allocator.free(t);
+        tokens.deinit(allocator);
+    }
+
+    try appendStemmedToken(allocator, &tokens, "Quick");
+    try appendStemmedToken(allocator, &tokens, "THE");
+    try appendStemmedToken(allocator, &tokens, "a");
+    try std.testing.expectEqual(@as(usize, 1), tokens.items.len);
+    try std.testing.expectEqualStrings("quick", tokens.items[0]);
+}
+
+test "appendStemmedToken: append failure leaks nothing" {
+    // Fail each allocation in turn: every outcome must be leak-free (testing allocator checks).
+    var fail_index: usize = 0;
+    while (fail_index < 16) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(
+            std.testing.allocator,
+            .{ .fail_index = fail_index },
+        );
+        const allocator = failing.allocator();
+        var tokens = std.ArrayListUnmanaged([]const u8){};
+        defer tokens.deinit(allocator);
+
+        if (appendStemmedToken(allocator, &tokens, "running")) |_| {
+            try std.testing.expectEqual(@as(usize, 1), tokens.items.len);
+            allocator.free(tokens.items[0]);
+        } else |err| switch (err) {
+            error.OutOfMemory => try std.testing.expectEqual(@as(usize, 0), tokens.items.len),
+        }
+    }
 }
 
 test "to_tsvector: deduplication" {
