@@ -14,7 +14,6 @@ function_length:src/sql/engine.zig:valueToIndexKey:102
 function_length:src/sql/executor.zig:serializeValue:111
 function_length:src/sql/executor.zig:deserializeValue:106
 function_length:src/sql/executor.zig:evalExpr:296
-function_length:src/sql/executor.zig:evalJsonPathExtract:79
 function_length:src/sql/executor.zig:evalBinaryOp:120
 function_length:src/sql/executor.zig:evalArithmetic:123
 function_length:src/sql/executor.zig:evalCast:112
