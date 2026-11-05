@@ -2762,49 +2762,52 @@ fn evalJsonPathExtract(
     // Navigate the path
     var current = parsed.value;
     for (path_arr) |path_elem| {
-        const key = switch (path_elem) {
-            .text => |t| t,
-            .integer => |v| {
-                // Array index
-                const idx: usize = @intCast(v);
-                current = switch (current) {
-                    .array => |arr| if (idx < arr.items.len)
-                        arr.items[idx]
-                    else
-                        return Value.null_value,
-                    else => return Value.null_value,
-                };
-                continue;
-            },
-            else => return EvalError.TypeError,
-        };
+        current = (try jsonPathStep(current, path_elem)) orelse return Value.null_value;
+    }
 
-        current = switch (current) {
-            .object => |obj| obj.get(key) orelse return Value.null_value,
+    return jsonNodeToValue(allocator, current, as_text);
+}
+
+/// One step of a `#>` path walk. A missing key or index yields null (SQL NULL for the caller),
+/// a path element that is neither text nor integer is a type error.
+fn jsonPathStep(current: std.json.Value, path_elem: Value) EvalError!?std.json.Value {
+    switch (path_elem) {
+        .integer => |v| {
+            if (v < 0) return null;
+            const idx: usize = @intCast(v);
+            return switch (current) {
+                .array => |arr| if (idx < arr.items.len) arr.items[idx] else null,
+                else => null,
+            };
+        },
+        .text => |key| return switch (current) {
+            .object => |obj| obj.get(key),
             .array => |arr| blk: {
                 // When the current node is an array, try parsing the text key as an integer index
                 // (0-based)
-                const idx = std.fmt.parseInt(usize, key, 10) catch return Value.null_value;
-                break :blk if (idx < arr.items.len) arr.items[idx] else return Value.null_value;
+                const idx = std.fmt.parseInt(usize, key, 10) catch break :blk null;
+                break :blk if (idx < arr.items.len) arr.items[idx] else null;
             },
-            else => return Value.null_value,
-        };
+            else => null,
+        },
+        else => return EvalError.TypeError,
     }
+}
 
-    // Convert result to Value
-    if (as_text) {
-        const text_result = switch (current) {
-            .string => |s| try dupeOom(allocator, s),
-            .integer => |v| try printAlloc(allocator, "{d}", .{v}),
-            .float => |v| try printAlloc(allocator, "{d}", .{v}),
-            .bool => |b| try dupeOom(allocator, if (b) "true" else "false"),
-            .null => return Value.null_value,
-            else => try jsonToOwned(allocator, current),
-        };
-        return Value{ .text = text_result };
-    } else {
-        return Value{ .text = try jsonToOwned(allocator, current) };
-    }
+/// Render a JSON node as the result of `#>` (JSON text) or `#>>` (unwrapped scalar text, with a
+/// JSON null becoming SQL NULL). The returned text is owned by `allocator`.
+fn jsonNodeToValue(allocator: Allocator, node: std.json.Value, as_text: bool) EvalError!Value {
+    if (!as_text) return Value{ .text = try jsonToOwned(allocator, node) };
+
+    const text_result = switch (node) {
+        .string => |s| try dupeOom(allocator, s),
+        .integer => |v| try printAlloc(allocator, "{d}", .{v}),
+        .float => |v| try printAlloc(allocator, "{d}", .{v}),
+        .bool => |b| try dupeOom(allocator, if (b) "true" else "false"),
+        .null => return Value.null_value,
+        else => try jsonToOwned(allocator, node),
+    };
+    return Value{ .text = text_result };
 }
 
 /// Delete path from JSON: json #- '{a}'
@@ -19275,6 +19278,68 @@ test "JSON path extract with array index" {
 
     try std.testing.expect(result == .text);
     try std.testing.expectEqualStrings("2", result.text);
+}
+
+test "jsonPathStep: object key, array index, text index, misses, type error" {
+    const allocator = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"a\":[10,20],\"b\":1}",
+        .{},
+    );
+    defer parsed.deinit();
+
+    const arr = (try jsonPathStep(parsed.value, Value{ .text = "a" })).?;
+    try std.testing.expectEqual(@as(usize, 2), arr.array.items.len);
+    const second = (try jsonPathStep(arr, Value{ .integer = 1 })).?;
+    try std.testing.expectEqual(@as(i64, 20), second.integer);
+    const by_text = (try jsonPathStep(arr, Value{ .text = "0" })).?;
+    try std.testing.expectEqual(@as(i64, 10), by_text.integer);
+
+    // Misses are SQL NULL (null result), not errors.
+    try std.testing.expect((try jsonPathStep(parsed.value, Value{ .text = "zz" })) == null);
+    try std.testing.expect((try jsonPathStep(arr, Value{ .integer = 2 })) == null);
+    try std.testing.expect((try jsonPathStep(arr, Value{ .integer = -1 })) == null);
+    try std.testing.expect((try jsonPathStep(arr, Value{ .text = "x" })) == null);
+    try std.testing.expect((try jsonPathStep(second, Value{ .text = "a" })) == null);
+    try std.testing.expect((try jsonPathStep(second, Value{ .integer = 0 })) == null);
+
+    try std.testing.expectError(
+        EvalError.TypeError,
+        jsonPathStep(parsed.value, Value{ .boolean = true }),
+    );
+}
+
+test "jsonNodeToValue: text mode unwraps scalars, json mode keeps JSON text" {
+    const allocator = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"s\":\"hi\",\"n\":7,\"t\":true,\"z\":null}",
+        .{},
+    );
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+
+    const as_text = try jsonNodeToValue(allocator, obj.get("s").?, true);
+    defer as_text.free(allocator);
+    try std.testing.expectEqualStrings("hi", as_text.text);
+
+    const as_json = try jsonNodeToValue(allocator, obj.get("s").?, false);
+    defer as_json.free(allocator);
+    try std.testing.expectEqualStrings("\"hi\"", as_json.text);
+
+    const num = try jsonNodeToValue(allocator, obj.get("n").?, true);
+    defer num.free(allocator);
+    try std.testing.expectEqualStrings("7", num.text);
+
+    const flag = try jsonNodeToValue(allocator, obj.get("t").?, true);
+    defer flag.free(allocator);
+    try std.testing.expectEqualStrings("true", flag.text);
+
+    const null_text = try jsonNodeToValue(allocator, obj.get("z").?, true);
+    try std.testing.expect(null_text == .null_value);
 }
 
 test "JSON delete path #- operator" {
