@@ -4301,79 +4301,86 @@ fn monthFromAbbrev(abbrev: *const [3]u8) ?u8 {
     return null;
 }
 
+/// Parses the `width_count` bytes of `text` starting at `offset` as a base-10 integer.
+/// Returns null when the field runs past the end of `text` or is not a valid `T`.
+fn parseDigitField(comptime T: type, text: []const u8, offset: usize, width_count: usize) ?T {
+    std.debug.assert(width_count > 0);
+    std.debug.assert(offset <= text.len);
+    if (offset + width_count > text.len) return null;
+    return std.fmt.parseInt(T, text[offset .. offset + width_count], 10) catch null;
+}
+
+/// Date/time components produced by `parseFormattedDatetime`; unparsed fields keep the epoch.
+const DatetimeParts = struct {
+    year: i32 = 1970,
+    month: u8 = 1,
+    day: u8 = 1,
+    hour: i64 = 0,
+    minute: i64 = 0,
+    second: i64 = 0,
+};
+
+/// How far one matched format token advances the format template and the input text.
+const DatetimeStep = struct { fmt_len: usize, text_len: usize };
+
+/// Matches the format token at the start of `rf` (non-empty) and stores the value read from
+/// `text` at `ti` into `parts`. Returns null when `rf` starts with no token, and
+/// `error.InvalidDatetime` when a token matches but the text under it does not parse.
+fn applyDatetimeToken(
+    parts: *DatetimeParts,
+    text: []const u8,
+    ti: usize,
+    rf: []const u8,
+) error{InvalidDatetime}!?DatetimeStep {
+    std.debug.assert(rf.len > 0);
+    std.debug.assert(ti <= text.len);
+    if (rf.len >= 4 and std.mem.eql(u8, rf[0..4], "YYYY")) {
+        parts.year = parseDigitField(i32, text, ti, 4) orelse return error.InvalidDatetime;
+        return .{ .fmt_len = 4, .text_len = 4 };
+    }
+    if (rf.len >= 4 and std.mem.eql(u8, rf[0..4], "HH24")) {
+        parts.hour = parseDigitField(i64, text, ti, 2) orelse return error.InvalidDatetime;
+        return .{ .fmt_len = 4, .text_len = 2 };
+    }
+    if (rf.len >= 3 and isMonthToken(rf[0..3])) {
+        if (ti + 3 > text.len) return error.InvalidDatetime;
+        parts.month = monthFromAbbrev(text[ti..][0..3]) orelse return error.InvalidDatetime;
+        return .{ .fmt_len = 3, .text_len = 3 };
+    }
+    if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "MM")) {
+        parts.month = parseDigitField(u8, text, ti, 2) orelse return error.InvalidDatetime;
+        return .{ .fmt_len = 2, .text_len = 2 };
+    }
+    if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "DD")) {
+        parts.day = parseDigitField(u8, text, ti, 2) orelse return error.InvalidDatetime;
+        return .{ .fmt_len = 2, .text_len = 2 };
+    }
+    if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "MI")) {
+        parts.minute = parseDigitField(i64, text, ti, 2) orelse return error.InvalidDatetime;
+        return .{ .fmt_len = 2, .text_len = 2 };
+    }
+    if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "SS")) {
+        parts.second = parseDigitField(i64, text, ti, 2) orelse return error.InvalidDatetime;
+        return .{ .fmt_len = 2, .text_len = 2 };
+    }
+    return null;
+}
+
 /// Parse a date/datetime string using a format template.
-/// Returns a struct with year/month/day/hour/minute/second components.
-fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
-    year: i32,
-    month: u8,
-    day: u8,
-    hour: i64,
-    minute: i64,
-    second: i64,
-} {
+/// Returns the year/month/day/hour/minute/second components, or null on a bad input.
+fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?DatetimeParts {
     var ti: usize = 0;
     var fi: usize = 0;
-    var year: i32 = 1970;
-    var month: u8 = 1;
-    var day: u8 = 1;
-    var hour: i64 = 0;
-    var minute: i64 = 0;
-    var second: i64 = 0;
+    var parts: DatetimeParts = .{};
 
     while (fi < fmt.len) {
         if (ti > text.len) return null;
-        const rf = fmt[fi..];
-
-        // 4-char patterns
-        if (rf.len >= 4 and std.mem.eql(u8, rf[0..4], "YYYY")) {
-            if (ti + 4 > text.len) return null;
-            year = std.fmt.parseInt(i32, text[ti .. ti + 4], 10) catch return null;
-            ti += 4;
-            fi += 4;
-            continue;
-        }
-        if (rf.len >= 4 and std.mem.eql(u8, rf[0..4], "HH24")) {
-            if (ti + 2 > text.len) return null;
-            hour = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
-            ti += 2;
-            fi += 4;
-            continue;
-        }
-        // 3-char patterns
-        if (rf.len >= 3 and isMonthToken(rf[0..3])) {
-            if (ti + 3 > text.len) return null;
-            month = monthFromAbbrev(text[ti..][0..3]) orelse return null;
-            ti += 3;
-            fi += 3;
-            continue;
-        }
-        // 2-char patterns
-        if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "MM")) {
-            if (ti + 2 > text.len) return null;
-            month = std.fmt.parseInt(u8, text[ti .. ti + 2], 10) catch return null;
-            ti += 2;
-            fi += 2;
-            continue;
-        }
-        if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "DD")) {
-            if (ti + 2 > text.len) return null;
-            day = std.fmt.parseInt(u8, text[ti .. ti + 2], 10) catch return null;
-            ti += 2;
-            fi += 2;
-            continue;
-        }
-        if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "MI")) {
-            if (ti + 2 > text.len) return null;
-            minute = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
-            ti += 2;
-            fi += 2;
-            continue;
-        }
-        if (rf.len >= 2 and std.mem.eql(u8, rf[0..2], "SS")) {
-            if (ti + 2 > text.len) return null;
-            second = std.fmt.parseInt(i64, text[ti .. ti + 2], 10) catch return null;
-            ti += 2;
-            fi += 2;
+        const step = applyDatetimeToken(&parts, text, ti, fmt[fi..]) catch |err| switch (err) {
+            error.InvalidDatetime => return null,
+        };
+        if (step) |matched| {
+            ti += matched.text_len;
+            fi += matched.fmt_len;
             continue;
         }
         // Literal character
@@ -4386,17 +4393,9 @@ fn parseFormattedDatetime(text: []const u8, fmt: []const u8) ?struct {
         fi += 1;
     }
 
-    if (month < 1 or month > 12) return null;
-    if (day < 1 or day > daysInMonth(month, year)) return null;
-
-    return .{
-        .year = year,
-        .month = month,
-        .day = day,
-        .hour = hour,
-        .minute = minute,
-        .second = second,
-    };
+    if (parts.month < 1 or parts.month > 12) return null;
+    if (parts.day < 1 or parts.day > daysInMonth(parts.month, parts.year)) return null;
+    return parts;
 }
 
 /// True when the format template contains the token in upper or lower case.
@@ -37212,4 +37211,37 @@ test "MatchRecognizeOp empty input: zero input rows produces zero output rows" {
 
     // First next() should return null immediately
     try std.testing.expectEqual(@as(?Row, null), try match_op.next());
+}
+
+test "parseDigitField reads a fixed-width field at an offset" {
+    try std.testing.expectEqual(@as(?i32, 2026), parseDigitField(i32, "x2026-11", 1, 4));
+    try std.testing.expectEqual(@as(?u8, 7), parseDigitField(u8, "07", 0, 2));
+    try std.testing.expectEqual(@as(?i64, 59), parseDigitField(i64, "12:59", 3, 2));
+}
+
+test "parseDigitField rejects truncated and non-numeric input" {
+    try std.testing.expectEqual(@as(?i32, null), parseDigitField(i32, "202", 0, 4));
+    try std.testing.expectEqual(@as(?i32, null), parseDigitField(i32, "", 0, 4));
+    try std.testing.expectEqual(@as(?u8, null), parseDigitField(u8, "1x", 0, 2));
+    try std.testing.expectEqual(@as(?u8, null), parseDigitField(u8, "999", 0, 3));
+}
+
+test "parseFormattedDatetime parses every numeric token" {
+    const parsed = parseFormattedDatetime("2026-11-08 13:45:09", "YYYY-MM-DD HH24:MI:SS").?;
+    try std.testing.expectEqual(@as(i32, 2026), parsed.year);
+    try std.testing.expectEqual(@as(u8, 11), parsed.month);
+    try std.testing.expectEqual(@as(u8, 8), parsed.day);
+    try std.testing.expectEqual(@as(i64, 13), parsed.hour);
+    try std.testing.expectEqual(@as(i64, 45), parsed.minute);
+    try std.testing.expectEqual(@as(i64, 9), parsed.second);
+}
+
+test "parseFormattedDatetime handles month abbreviation and rejects bad input" {
+    const parsed = parseFormattedDatetime("08 Nov 2026", "DD Mon YYYY").?;
+    try std.testing.expectEqual(@as(u8, 11), parsed.month);
+    try std.testing.expectEqual(@as(i32, 2026), parsed.year);
+    try std.testing.expect(parseFormattedDatetime("2026-1", "YYYY-MM") == null);
+    try std.testing.expect(parseFormattedDatetime("2026-13-01", "YYYY-MM-DD") == null);
+    try std.testing.expect(parseFormattedDatetime("2026-02-30", "YYYY-MM-DD") == null);
+    try std.testing.expect(parseFormattedDatetime("abcd-01-01", "YYYY-MM-DD") == null);
 }

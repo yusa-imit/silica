@@ -19,7 +19,6 @@ function_length:src/sql/executor.zig:evalArithmetic:123
 function_length:src/sql/executor.zig:evalCast:112
 function_length:src/sql/executor.zig:toCharTimestamp:230
 function_length:src/sql/executor.zig:toCharNumber:109
-function_length:src/sql/executor.zig:parseFormattedDatetime:95
 function_length:src/sql/executor.zig:evalFunctionCall:3857
 function_length:src/sql/tokenizer.zig:lookupKeyword:262
 function_length:src/sql/planner.zig:deriveOutputSchemaFromNode:187
