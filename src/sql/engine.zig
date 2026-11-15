@@ -26,6 +26,7 @@ const ENABLE_PREPARED_STMT_TESTS = true;
 const std = @import("std");
 const log = std.log.scoped(.engine);
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 const tokenizer_mod = @import("tokenizer.zig");
 const parser_mod = @import("parser.zig");
@@ -323,17 +324,9 @@ fn ginOpClassImpl(op: catalog_mod.GinOpClass) gin_index_mod.OpClass {
 /// Encode a Value as an index key for B+Tree storage.
 /// Integer values use 8-byte big-endian encoding with sign flip for correct
 /// lexicographic ordering. Text values use raw bytes. NULL encodes as empty.
-fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
+fn valueToIndexKey(allocator: Allocator, val: Value) error{OutOfMemory}![]u8 {
     return switch (val) {
-        .integer => |i| {
-            const buf = try allocator.alloc(u8, 8);
-            // Flip the sign bit for correct lexicographic ordering of signed integers:
-            // -3, -2, -1, 0, 1, 2, 3 should sort correctly as byte sequences.
-            const unsigned: u64 = @bitCast(i);
-            const flipped = unsigned ^ (@as(u64, 1) << 63);
-            std.mem.writeInt(u64, buf[0..8], flipped, .big);
-            return buf;
-        },
+        .integer => |i| signFlippedKey(u64, allocator, @bitCast(i)),
         .text => |t| try allocator.dupe(u8, t),
         .real => |r| {
             const buf = try allocator.alloc(u8, 8);
@@ -348,38 +341,10 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             buf[0] = if (b) 1 else 0;
             return buf;
         },
-        .date => |d| {
-            const buf = try allocator.alloc(u8, 4);
-            const unsigned: u32 = @bitCast(d);
-            const flipped = unsigned ^ (@as(u32, 1) << 31);
-            std.mem.writeInt(u32, buf[0..4], flipped, .big);
-            return buf;
-        },
-        .time => |t| {
-            const buf = try allocator.alloc(u8, 8);
-            const unsigned: u64 = @bitCast(t);
-            const flipped = unsigned ^ (@as(u64, 1) << 63);
-            std.mem.writeInt(u64, buf[0..8], flipped, .big);
-            return buf;
-        },
-        .timestamp => |ts| {
-            const buf = try allocator.alloc(u8, 8);
-            const unsigned: u64 = @bitCast(ts);
-            const flipped = unsigned ^ (@as(u64, 1) << 63);
-            std.mem.writeInt(u64, buf[0..8], flipped, .big);
-            return buf;
-        },
-        .interval => |iv| {
-            // Encode as 16 bytes: months(4) + days(4) + micros(8), sign-flipped for ordering
-            const buf = try allocator.alloc(u8, 16);
-            const m_unsigned: u32 = @bitCast(iv.months);
-            std.mem.writeInt(u32, buf[0..4], m_unsigned ^ (@as(u32, 1) << 31), .big);
-            const d_unsigned: u32 = @bitCast(iv.days);
-            std.mem.writeInt(u32, buf[4..8], d_unsigned ^ (@as(u32, 1) << 31), .big);
-            const us_unsigned: u64 = @bitCast(iv.micros);
-            std.mem.writeInt(u64, buf[8..16], us_unsigned ^ (@as(u64, 1) << 63), .big);
-            return buf;
-        },
+        .date => |d| signFlippedKey(u32, allocator, @bitCast(d)),
+        .time => |t| signFlippedKey(u64, allocator, @bitCast(t)),
+        .timestamp => |ts| signFlippedKey(u64, allocator, @bitCast(ts)),
+        .interval => |iv| intervalIndexKey(allocator, iv),
         .numeric => |n| {
             // Encode as 17 bytes: scale(1) + sign-flipped i128(16) for correct ordering
             const buf = try allocator.alloc(u8, 17);
@@ -394,31 +359,7 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
             @memcpy(buf, &u);
             return buf;
         },
-        .array => |arr| {
-            // Array index key: element count, then concatenated element keys.
-            var total_size: usize = 4; // u32 element count
-            var elem_keys = std.ArrayListUnmanaged([]u8){};
-            defer {
-                for (elem_keys.items) |k| allocator.free(k);
-                elem_keys.deinit(allocator);
-            }
-            for (arr) |elem| {
-                const ek = try valueToIndexKey(allocator, elem);
-                total_size += 4 + ek.len; // u32 length prefix + key data
-                try elem_keys.append(allocator, ek);
-            }
-            const buf = try allocator.alloc(u8, total_size);
-            var pos: usize = 0;
-            std.mem.writeInt(u32, buf[pos..][0..4], @intCast(arr.len), .big);
-            pos += 4;
-            for (elem_keys.items) |ek| {
-                std.mem.writeInt(u32, buf[pos..][0..4], @intCast(ek.len), .big);
-                pos += 4;
-                @memcpy(buf[pos..][0..ek.len], ek);
-                pos += ek.len;
-            }
-            return buf;
-        },
+        .array => |arr| arrayIndexKey(allocator, arr),
         .tsvector => |t| try allocator.dupe(u8, t),
         .tsquery => |t| try allocator.dupe(u8, t),
         .null_value => try allocator.alloc(u8, 0),
@@ -426,13 +367,60 @@ fn valueToIndexKey(allocator: Allocator, val: Value) ![]u8 {
     };
 }
 
+/// Big-endian key of an unsigned integer with its sign bit flipped, so signed
+/// values sort correctly as byte sequences (-3, -2, -1, 0, 1, 2, 3).
+fn signFlippedKey(comptime T: type, allocator: Allocator, unsigned: T) ![]u8 {
+    const bits = @typeInfo(T).int.bits;
+    comptime assert(@typeInfo(T).int.signedness == .unsigned);
+    const width = @divExact(bits, 8);
+    const buf = try allocator.alloc(u8, width);
+    const flipped = unsigned ^ (@as(T, 1) << (bits - 1));
+    std.mem.writeInt(T, buf[0..width], flipped, .big);
+    return buf;
+}
+
+/// Encode an interval as 16 bytes: months(4) + days(4) + micros(8), sign-flipped for ordering.
+fn intervalIndexKey(allocator: Allocator, iv: Value.Interval) ![]u8 {
+    const buf = try allocator.alloc(u8, 16);
+    const m_unsigned: u32 = @bitCast(iv.months);
+    std.mem.writeInt(u32, buf[0..4], m_unsigned ^ (@as(u32, 1) << 31), .big);
+    const d_unsigned: u32 = @bitCast(iv.days);
+    std.mem.writeInt(u32, buf[4..8], d_unsigned ^ (@as(u32, 1) << 31), .big);
+    const us_unsigned: u64 = @bitCast(iv.micros);
+    std.mem.writeInt(u64, buf[8..16], us_unsigned ^ (@as(u64, 1) << 63), .big);
+    return buf;
+}
+
+/// Array index key: element count, then each element key behind a u32 length prefix.
+fn arrayIndexKey(allocator: Allocator, arr: []const Value) error{OutOfMemory}![]u8 {
+    var total_size: usize = 4; // u32 element count
+    var elem_keys = std.ArrayListUnmanaged([]u8){};
+    defer {
+        for (elem_keys.items) |k| allocator.free(k);
+        elem_keys.deinit(allocator);
+    }
+    for (arr) |elem| {
+        const ek = try valueToIndexKey(allocator, elem);
+        errdefer allocator.free(ek);
+        total_size += 4 + ek.len; // u32 length prefix + key data
+        try elem_keys.append(allocator, ek);
+    }
+    const buf = try allocator.alloc(u8, total_size);
+    var pos: usize = 0;
+    std.mem.writeInt(u32, buf[pos..][0..4], @intCast(arr.len), .big);
+    pos += 4;
+    for (elem_keys.items) |ek| {
+        std.mem.writeInt(u32, buf[pos..][0..4], @intCast(ek.len), .big);
+        pos += 4;
+        @memcpy(buf[pos..][0..ek.len], ek);
+        pos += ek.len;
+    }
+    return buf;
+}
+
 /// Encode a literal integer as an index key (same encoding as valueToIndexKey).
 fn integerToIndexKey(allocator: Allocator, i: i64) ![]u8 {
-    const buf = try allocator.alloc(u8, 8);
-    const unsigned: u64 = @bitCast(i);
-    const flipped = unsigned ^ (@as(u64, 1) << 63);
-    std.mem.writeInt(u64, buf[0..8], flipped, .big);
-    return buf;
+    return signFlippedKey(u64, allocator, @bitCast(i));
 }
 
 /// Encode a literal string as an index key.
@@ -50932,4 +50920,62 @@ test "MATCH_RECOGNIZE MEASURES SEMANTICS: no keyword defaults to RUNNING (grows 
     try testing.expectEqual(@as(i64, 80), default_last_values.items[2]);
     try testing.expectEqual(@as(i64, 85), default_last_values.items[3]);
     try testing.expectEqual(@as(i64, 95), default_last_values.items[4]);
+}
+
+test "valueToIndexKey: signed 64-bit keys sort bytewise and match flip encoding" {
+    const a = try valueToIndexKey(testing.allocator, .{ .integer = -3 });
+    defer testing.allocator.free(a);
+    const b = try valueToIndexKey(testing.allocator, .{ .integer = 0 });
+    defer testing.allocator.free(b);
+    const c = try valueToIndexKey(testing.allocator, .{ .integer = 7 });
+    defer testing.allocator.free(c);
+    try testing.expectEqualSlices(u8, &.{ 0x80, 0, 0, 0, 0, 0, 0, 0 }, b);
+    try testing.expect(std.mem.order(u8, a, b) == .lt);
+    try testing.expect(std.mem.order(u8, b, c) == .lt);
+    const same = try integerToIndexKey(testing.allocator, 7);
+    defer testing.allocator.free(same);
+    try testing.expectEqualSlices(u8, c, same);
+}
+
+test "valueToIndexKey: interval and numeric layouts" {
+    const iv = try valueToIndexKey(testing.allocator, .{ .interval = .{
+        .months = 1,
+        .days = -1,
+        .micros = 0,
+    } });
+    defer testing.allocator.free(iv);
+    try testing.expectEqual(@as(usize, 16), iv.len);
+    try testing.expectEqualSlices(u8, &.{ 0x80, 0, 0, 1 }, iv[0..4]);
+    try testing.expectEqualSlices(u8, &.{ 0x7f, 0xff, 0xff, 0xff }, iv[4..8]);
+    try testing.expectEqualSlices(u8, &.{ 0x80, 0, 0, 0, 0, 0, 0, 0 }, iv[8..16]);
+
+    const num = try valueToIndexKey(testing.allocator, .{ .numeric = .{ .value = 5, .scale = 2 } });
+    defer testing.allocator.free(num);
+    try testing.expectEqual(@as(usize, 17), num.len);
+    try testing.expectEqual(@as(u8, 2), num[0]);
+    try testing.expectEqual(@as(u8, 0x80), num[1]);
+    try testing.expectEqual(@as(u8, 5), num[16]);
+}
+
+test "valueToIndexKey: array encodes count then length-prefixed elements, leak-free on OOM" {
+    const elems = [_]Value{ .{ .integer = 1 }, .{ .boolean = true } };
+    const key = try valueToIndexKey(testing.allocator, .{ .array = &elems });
+    defer testing.allocator.free(key);
+    try testing.expectEqual(@as(usize, 4 + (4 + 8) + (4 + 1)), key.len);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 2 }, key[0..4]);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 8 }, key[4..8]);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 1 }, key[16..20]);
+    try testing.expectEqual(@as(u8, 1), key[20]);
+
+    for (0..12) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(
+            testing.allocator,
+            .{ .fail_index = fail_index },
+        );
+        if (valueToIndexKey(failing.allocator(), .{ .array = &elems })) |k| {
+            failing.allocator().free(k);
+        } else |err| switch (err) {
+            error.OutOfMemory => {},
+        }
+    }
 }
